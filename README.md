@@ -1,1 +1,162 @@
-# yourlsiccopenidclient
+# ICC OpenID Connect Client plugin for YOURLS
+Login to YOURLS with Single Sign-On using any OpenID Connect identity provider (Keycloak, Entra ID, Google, Auth0, Okta, ...) through the Authorization Code Flow. Includes a login button on the login screen, automatic SSO redirection, email domain restriction, automatic account provisioning, single logout and a debug log - with no third party libraries bundled.
+
+<!-- buttons -->
+[![Stars](https://img.shields.io/github/stars/ivancarlosti/yourlsiccopenidclient?label=⭐%20Stars&color=gold&style=flat)](https://github.com/ivancarlosti/yourlsiccopenidclient/stargazers)
+[![Watchers](https://img.shields.io/github/watchers/ivancarlosti/yourlsiccopenidclient?label=Watchers&style=flat&color=red)](https://github.com/sponsors/ivancarlosti)
+[![Forks](https://img.shields.io/github/forks/ivancarlosti/yourlsiccopenidclient?label=Forks&style=flat&color=ff69b4)](https://github.com/sponsors/ivancarlosti)
+[![Downloads](https://img.shields.io/github/downloads/ivancarlosti/yourlsiccopenidclient/total?label=Downloads&color=success)](https://github.com/ivancarlosti/yourlsiccopenidclient/releases)
+[![GitHub commit activity](https://img.shields.io/github/commit-activity/m/ivancarlosti/yourlsiccopenidclient?label=Activity)](https://github.com/ivancarlosti/yourlsiccopenidclient/pulse)
+[![GitHub Issues](https://img.shields.io/github/issues/ivancarlosti/yourlsiccopenidclient?label=Issues&color=orange)](https://github.com/ivancarlosti/yourlsiccopenidclient/issues)  
+[![License](https://img.shields.io/github/license/ivancarlosti/yourlsiccopenidclient?label=License)](LICENSE)
+[![GitHub last commit](https://img.shields.io/github/last-commit/ivancarlosti/yourlsiccopenidclient?label=Last%20Commit)](https://github.com/ivancarlosti/yourlsiccopenidclient/commits)
+[![Security](https://img.shields.io/badge/Security-View%20Here-purple)](https://github.com/ivancarlosti/yourlsiccopenidclient/security)
+[![Code of Conduct](https://img.shields.io/badge/Code%20of%20Conduct-2.1-4baaaa)](https://github.com/ivancarlosti/yourlsiccopenidclient?tab=coc-ov-file)
+<!-- endbuttons -->
+
+## Features
+* OpenID Connect Authorization Code Flow against any compliant provider
+* **ID token signature verification** with the provider JWKS (RS256, RS384, RS512, ES256, ES384, ES512) plus `iss`, `aud`, `azp`, `exp`, `iat`, `nbf`, `nonce` and `acr` validation
+* Login **button on the YOURLS login screen**, "button only" mode (no password form) or **automatic SSO** redirection
+* **Single logout**: the YOURLS logout link also ends the identity provider session (`id_token_hint`, `post_logout_redirect_uri`)
+* **Account handling**: link to an existing `config.php` user and/or provision SSO accounts automatically
+* **Email domain restriction** (domains or full addresses) and configurable claim mapping (identity, nickname, display name, email)
+* **Quick Setup**: import every endpoint from the provider discovery document
+* **Debug log** with a viewer, plus optional **local 2FA bypass** (MFA is assumed at the identity provider)
+* Settings can be overridden with `OIDC_*` constants in `user/config.php`
+* No third party libraries: JWT/JWKS validation uses `ext-openssl` only
+
+## Inspiration
+* Project inspired by [ICC.gg Sign-In for OpenID Connect](https://github.com/ivancarlosti/wordpressiccopenidclient), the same plugin for WordPress.
+
+## Instructions
+* Download the plugin release
+* Create the folder `icc-openid-client` into YOURLS path `/user/plugins` and store `plugin.php`, `manifest.json` and the `includes` folder on it
+* Activate the plugin in `/admin/plugins.php` page of your YOURLS installation
+* Access the `OpenID Connect` page from the admin menu
+* Paste your provider discovery URL (for example `https://sso.example.com/realms/myrealm/.well-known/openid-configuration`) and click **Load configuration**
+* Fill in the Client ID / Client Secret, register the **Redirect URI** shown in the Notes section at your identity provider and save
+
+## Provider setup (Keycloak example)
+1. Keycloak admin console &raquo; **Clients** &raquo; **Create client**
+    * Client type `OpenID Connect`, Client authentication **On** (confidential client), Standard flow **On**
+    * **Valid redirect URIs**: the Redirect URI displayed by the plugin, e.g. `https://sho.rt/?icc_oidc=callback`
+    * **Valid post logout redirect URIs**: `https://sho.rt/`
+    * Web origins: leave empty
+2. Copy the **Client secret** from the *Credentials* tab into the plugin settings
+3. Keep the default `email` client scope enabled so the email claim (and the domain restriction) works
+4. Discovery URL: `https://sso.example.com/realms/<realm>/.well-known/openid-configuration`
+5. Issuer: `https://sso.example.com/realms/<realm>` (the discovery import fills it in)
+
+The same procedure applies to Entra ID, Google, Auth0, Okta and other providers: create a confidential web client, register the redirect URI and paste the discovery URL.
+
+
+## Settings
+
+### Client Settings
+| Setting | Description |
+|---|---|
+| Login Type | `button` (button on the login form), `button_only` (button only, password form hidden), `auto` (redirect straight to the identity provider) |
+| Login Button Text | Text of the SSO button (default *Login with Single Sign-On*) |
+| Login Button Logo URL | Optional image displayed before the button text |
+| Client ID / Client Secret | Credentials of the confidential client registered at the provider |
+| OpenID Scope | Space separated scopes, default `openid profile email` |
+| Login / Token / Userinfo / Logout / JWKS Endpoint URL | Endpoints of the provider (filled in by the discovery import) |
+| Issuer | Expected `iss` claim; derived from the login endpoint when empty |
+| JWKS Cache TTL | How long signing keys are cached (default 3600 seconds) |
+| ACR Values | Optional authentication context requested from the provider |
+| HTTP Request Timeout | Timeout for provider requests (default 5 seconds) |
+| Disable SSL Verify | Development only: ignored unless `YOURLS_DEBUG` is on |
+| Allow Internal IdP | Allows HTTP and private network endpoints (local development) |
+
+### User Settings
+| Setting | Description |
+|---|---|
+| Identity Key | Claim used as the YOURLS user name (`preferred_username`, `sub`, `email`, or a nested path) |
+| Nickname Key | Claim used as the nickname |
+| Email Formatting | Claim string used to build the email address, e.g. `{email}` |
+| Display Name Formatting | Optional, e.g. `{given_name} {family_name}` |
+| Identify with User Name | Link accounts by user name instead of email address |
+| Link Existing Users | Log in as an existing YOURLS user with the same identity |
+| Create user if it does not exist | Provision an SSO account automatically at first login |
+| Email Domain Restriction | Space separated allowed domains or full addresses; empty allows all |
+| Bypass local 2FA on SSO login | Only enable when multi-factor authentication is enforced at the provider |
+
+### Authorization and Log Settings
+| Setting | Description |
+|---|---|
+| State Time Limit | Lifetime of a login attempt (default 180 seconds) |
+| Redirect URI Override | Optional custom callback URL, also registered at the provider |
+| Redirect Back to Origin Page | Return the user to the page they started from |
+| Redirect to IdP on logout | Ends the identity provider session when logging out |
+| Enable Logging / Log Limit | Keep a debug log (with viewer) and how many entries to keep |
+
+### Configuration constants
+Any setting can be forced from `user/config.php` (constant values win over stored settings and are shown read-only in the admin page):
+
+```php
+define( 'OIDC_CLIENT_ID', 'yourls' );
+define( 'OIDC_CLIENT_SECRET', 'your-client-secret' );
+define( 'OIDC_ENDPOINT_LOGIN_URL', 'https://sso.example.com/realms/myrealm/protocol/openid-connect/auth' );
+define( 'OIDC_ENDPOINT_TOKEN_URL', 'https://sso.example.com/realms/myrealm/protocol/openid-connect/token' );
+define( 'OIDC_ENDPOINT_USERINFO_URL', 'https://sso.example.com/realms/myrealm/protocol/openid-connect/userinfo' );
+define( 'OIDC_ENDPOINT_JWKS_URL', 'https://sso.example.com/realms/myrealm/protocol/openid-connect/certs' );
+define( 'OIDC_ISSUER', 'https://sso.example.com/realms/myrealm' );
+define( 'OIDC_LOGIN_TYPE', 'auto' );
+define( 'OIDC_EMAIL_DOMAIN_RESTRICTION', 'example.com partner.org' );
+```
+
+## How it works
+1. The user is sent to the provider authorization endpoint with a random `state` and `nonce` (stored server side, single use, time limited).
+2. The provider returns an authorization code to `https://your-yourls/?icc_oidc=callback`, which the plugin handles *before* YOURLS runs its own authentication.
+3. The code is exchanged for tokens; the **ID token signature is verified against the provider JWKS** (cached, refreshed on key rotation) and its claims are validated (`iss`, `aud`, `azp`, `exp`, `iat`, `nbf`, `nonce`, `acr`).
+4. `userinfo` is requested when configured, and its subject must match the ID token.
+5. The identity is mapped to a YOURLS user: a known identity, an existing `config.php` user (when *Link Existing Users* is on) or a newly provisioned SSO account.
+6. YOURLS' own session cookie is stored, so the rest of YOURLS works unchanged. With *Bypass local 2FA* enabled the cookie is also mirrored for the current request so local 2FA plugins skip their prompt.
+
+Plugins can hook into the flow: `icc_oidc_authentication_url_params`, `icc_oidc_login_button_text`, `icc_oidc_user_login_test`, `icc_oidc_user_creation_test`, `icc_oidc_redirect_after_login`, `icc_oidc_user_create`, `icc_oidc_user_update`, `icc_oidc_user_logged_in`, `icc_oidc_login_error`, `icc_oidc_logout`.
+
+## Notes and limitations
+* YOURLS has no user directory: accounts provisioned through SSO live in a plugin option and are injected into YOURLS' user list on every request. They can **never** be used with password login, and they are listed (and can be removed) on the plugin page.
+* YOURLS' privacy setting (`YOURLS_PRIVATE` in `config.php`) is what forces authentication; the plugin works with it and never disables it.
+* Refresh tokens are not used: YOURLS keeps its own session cookie, so the last ID token is stored only to be sent as `id_token_hint` on logout.
+* HTTPS is required in production, and the provider endpoints must be reachable over the public internet unless *Allow Internal IdP* is enabled.
+
+## Development
+The unit/integration suite runs with plain PHP (no Composer, PHPUnit or database required) and includes the official RFC 7515 RS256/ES256 vectors, negative signature tests and simulated login flows:
+
+```bash
+php tests/run-tests.php
+```
+
+A real end to end test is also included: it downloads YOURLS into a temporary directory, starts MariaDB and a mock OpenID Connect provider (RS256) in Docker containers, and drives a full Single Sign-On login over HTTP (login button, automatic SSO redirect, code exchange, ID token verification, account provisioning, forged state rejection, single logout, settings page):
+
+```bash
+bash tests/e2e/run.sh      # requires docker, php CLI, curl
+```
+
+## Requirements
+* YOURLS 1.8.2+ (tested with YOURLS 1.10.x)
+* PHP 7.4+ with `ext-openssl`
+* HTTPS in production
+
+## Screenshots
+
+<img width="2036" height="1978" alt="Settings page" src="https://github.com/user-attachments/assets/1c7b614a-abdf-4578-9919-2e0c93b4031e" />
+
+<!-- footer -->
+---
+
+## 🧑‍💻 Consulting and technical support
+* For personal support and queries, please submit a new issue to have it addressed.
+* For commercial related questions, please [**contact me**][ivancarlos] for consulting costs.
+
+[cc]: https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/adding-a-code-of-conduct-to-your-project
+[contributing]: https://docs.github.com/en/articles/setting-guidelines-for-repository-contributors
+[security]: https://github.com/ivancarlosti/yourlsiccopenidclient/security
+[support]: https://github.com/ivancarlosti/yourlsiccopenidclient/issues
+[it]: https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository#configuring-the-template-chooser
+[prt]: https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/creating-a-pull-request-template-for-your-repository
+[funding]: https://github.com/sponsors/ivancarlosti
+[ivancarlos]: https://ivancarlos.me
+

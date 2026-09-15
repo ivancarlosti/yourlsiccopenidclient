@@ -309,6 +309,25 @@ function icc_oidc_site_url()
 }
 
 /**
+ * Is a URL pointing at this YOURLS installation?
+ *
+ * @param string $url URL to test.
+ *
+ * @return bool
+ */
+function icc_oidc_is_local_url($url)
+{
+    $site = parse_url(icc_oidc_site_url());
+    $target = parse_url((string) $url);
+
+    if (!is_array($site) || !is_array($target) || empty($site['host']) || empty($target['host'])) {
+        return false;
+    }
+
+    return strtolower($site['host']) === strtolower($target['host']);
+}
+
+/**
  * Default OAuth redirect URI (the URL the identity provider sends the user back to).
  *
  * @return string
@@ -322,6 +341,9 @@ function icc_oidc_default_redirect_uri()
 
 /**
  * Effective redirect URI (setting override, else the default callback URL).
+ *
+ * The value is returned verbatim: it has to match, byte for byte, the redirect
+ * URI registered at the identity provider.
  *
  * @return string
  */
@@ -337,13 +359,64 @@ function icc_oidc_redirect_uri()
 }
 
 /**
+ * URL of a plugin endpoint ("callback", "logout").
+ *
+ * The redirect URI is a single point of truth: when a custom one is configured
+ * (for example because the site root is not served by YOURLS), the logout URL is
+ * derived from it so both endpoints stay on the same, reachable entry point.
+ *
+ * @param string $action Endpoint action ("callback" or "logout").
+ *
+ * @return string
+ */
+function icc_oidc_endpoint_url($action)
+{
+    $action = (string) $action;
+
+    // Keep in sync with ICC_OpenID_Client_Auth::QUERY_VAR.
+    $marker = 'icc_oidc';
+    $default = rtrim(icc_oidc_site_url(), '/') . '/?' . $marker . '=' . $action;
+
+    $base = trim((string) icc_oidc_get('redirect_uri'));
+
+    if ($base === '' || !icc_oidc_is_local_url($base)) {
+        return $default;
+    }
+
+    $parts = parse_url($base);
+
+    if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
+        return $default;
+    }
+
+    // Keep every other parameter and only swap the action.
+    $query = array();
+
+    if (isset($parts['query'])) {
+        parse_str($parts['query'], $query);
+    }
+
+    $query[$marker] = $action;
+
+    $url = $parts['scheme'] . '://' . $parts['host'];
+
+    if (!empty($parts['port'])) {
+        $url .= ':' . intval($parts['port']);
+    }
+
+    $url .= isset($parts['path']) && $parts['path'] !== '' ? $parts['path'] : '/';
+
+    return $url . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+}
+
+/**
  * URL used to start the logout flow (clears the cookie, then ends the IdP session).
  *
  * @return string
  */
 function icc_oidc_logout_url()
 {
-    return rtrim(icc_oidc_site_url(), '/') . '/?icc_oidc=logout';
+    return icc_oidc_endpoint_url('logout');
 }
 
 /**

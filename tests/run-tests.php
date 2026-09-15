@@ -1301,12 +1301,63 @@ test('Settings: defaults, casting and options round trip', function () {
     assert_same('auto', icc_oidc_get('login_type'));
 
     assert_same('https://sho.rt/?icc_oidc=callback', icc_oidc_redirect_uri(), 'default redirect URI');
+    assert_same('https://sho.rt/?icc_oidc=logout', icc_oidc_logout_url(), 'default logout URL');
+
     yourls_update_option('icc_oidc_redirect_uri', 'https://sho.rt/custom-callback');
     assert_same('https://sho.rt/custom-callback', icc_oidc_redirect_uri(), 'redirect URI override');
 
-    assert_same('https://sho.rt/?icc_oidc=logout', icc_oidc_logout_url());
+    assert_same('https://sho.rt/custom-callback?icc_oidc=logout', icc_oidc_logout_url(), 'logout URL follows the override');
     assert_true(icc_oidc_is_https('https://sho.rt/'), 'https detected');
     assert_false(icc_oidc_is_https('http://sho.rt/'), 'http detected');
+});
+
+test('Endpoints: the logout URL follows the redirect URI override', function () {
+    icc_reset();
+
+    // A site whose root is not served by YOURLS uses a YOURLS entry point as
+    // redirect URI; logout has to stay on that same entry point.
+    yourls_update_option('icc_oidc_redirect_uri', 'https://sho.rt/admin/index.php?icc_oidc=callback');
+
+    assert_same(
+        'https://sho.rt/admin/index.php?icc_oidc=callback',
+        icc_oidc_redirect_uri(),
+        'the redirect URI is returned verbatim'
+    );
+    assert_same(
+        'https://sho.rt/admin/index.php?icc_oidc=logout',
+        icc_oidc_logout_url(),
+        'logout derived from the override'
+    );
+
+    // Extra parameters are preserved, only the action changes.
+    yourls_update_option('icc_oidc_redirect_uri', 'https://sho.rt/admin/index.php?icc_oidc=callback&lang=en');
+    assert_same(
+        'https://sho.rt/admin/index.php?icc_oidc=logout&lang=en',
+        icc_oidc_endpoint_url('logout'),
+        'other query parameters are kept'
+    );
+
+    // A non default port and a custom path survive too.
+    yourls_update_option('icc_oidc_redirect_uri', 'https://sho.rt:8443/yourls/callback?icc_oidc=callback');
+    assert_same(
+        'https://sho.rt:8443/yourls/callback?icc_oidc=logout',
+        icc_oidc_endpoint_url('logout'),
+        'port and path are kept'
+    );
+
+    // An override on another host must not be used to build the logout URL.
+    yourls_update_option('icc_oidc_redirect_uri', 'https://sso.example.com/?icc_oidc=callback');
+    assert_same('https://sho.rt/?icc_oidc=logout', icc_oidc_endpoint_url('logout'), 'foreign host ignored');
+    assert_same('https://sho.rt/?icc_oidc=callback', icc_oidc_endpoint_url('callback'), 'default callback URL');
+    assert_same(
+        'https://sso.example.com/?icc_oidc=callback',
+        icc_oidc_redirect_uri(),
+        'the redirect URI is still used verbatim'
+    );
+
+    assert_true(icc_oidc_is_local_url('https://sho.rt/admin/index.php'), 'local URL detected');
+    assert_false(icc_oidc_is_local_url('https://sso.example.com/'), 'foreign URL detected');
+    assert_false(icc_oidc_is_local_url(''), 'empty URL is not local');
 });
 
 

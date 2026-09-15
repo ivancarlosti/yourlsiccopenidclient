@@ -575,6 +575,21 @@ class ICC_OpenID_Client_Settings_Page
             . '<code>' . icc_oidc_esc_html($redirect_uri) . '</code><br />'
             . '<small>Register this exact URL as a valid redirect URI for the client at your identity provider.</small></p>' . "\n";
 
+        echo '<p><strong>Logout URL</strong><br />'
+            . '<code>' . icc_oidc_esc_html(icc_oidc_logout_url()) . '</code><br />'
+            . '<small>Clears the YOURLS session (and the provider session when single logout is enabled). '
+            . 'It follows the Redirect URI Override, so both endpoints stay on the same entry point.</small></p>' . "\n";
+
+        if (!icc_oidc_is_local_url($redirect_uri)) {
+            echo '<p style="color:#a33;"><strong>Warning:</strong> the redirect URI above does not point at this YOURLS installation ('
+                . icc_oidc_esc_html(icc_oidc_site_url()) . '): the identity provider response would never reach the plugin. '
+                . 'Set the Redirect URI Override to a URL served by YOURLS.</p>' . "\n";
+        } else {
+            echo '<p><small>The redirect URI must be answered by YOURLS itself. If another application or a static '
+                . '<code>index.php</code> owns the site root, set the Redirect URI Override to a YOURLS URL '
+                . '(for example <code>[your YOURLS admin URL]?icc_oidc=callback</code>) and register it at the identity provider.</small></p>' . "\n";
+        }
+
         echo '<p><strong>Issuer examples</strong><br />'
             . '<small>Keycloak: <code>https://host/realms/&lt;realm&gt;</code> &middot; '
             . 'Entra ID: <code>https://login.microsoftonline.com/&lt;tenant&gt;/v2.0</code> &middot; '

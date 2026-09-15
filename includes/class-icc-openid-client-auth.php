@@ -286,6 +286,10 @@ class ICC_OpenID_Client_Auth
      */
     protected function is_local_url($url)
     {
+        if (function_exists('icc_oidc_is_local_url')) {
+            return icc_oidc_is_local_url($url);
+        }
+
         $site = parse_url(icc_oidc_site_url());
         $target = parse_url((string) $url);
 

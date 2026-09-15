@@ -36,11 +36,12 @@ Login to YOURLS with Single Sign-On using any OpenID Connect identity provider (
 * Access the `OpenID Connect` page from the admin menu
 * Paste your provider discovery URL (for example `https://sso.example.com/realms/myrealm/.well-known/openid-configuration`) and click **Load configuration**
 * Fill in the Client ID / Client Secret, register the **Redirect URI** shown in the Notes section at your identity provider and save
+* The **Redirect URI must be answered by YOURLS itself**: if another application (a landing page, a static `index.php`, a parked domain page) owns the site root, the provider response never reaches the plugin. In that case set **Redirect URI Override** (see below) to a YOURLS URL such as `https://sho.rt/admin/index.php?icc_oidc=callback` and register that URL at the provider instead
 
 ## Provider setup (Keycloak example)
 1. Keycloak admin console &raquo; **Clients** &raquo; **Create client**
     * Client type `OpenID Connect`, Client authentication **On** (confidential client), Standard flow **On**
-    * **Valid redirect URIs**: the Redirect URI displayed by the plugin, e.g. `https://sho.rt/?icc_oidc=callback`
+    * **Valid redirect URIs**: the Redirect URI displayed by the plugin, e.g. `https://sho.rt/?icc_oidc=callback` (or the Redirect URI Override value, e.g. `https://sho.rt/admin/index.php?icc_oidc=callback`)
     * **Valid post logout redirect URIs**: `https://sho.rt/`
     * Web origins: leave empty
 2. Copy the **Client secret** from the *Credentials* tab into the plugin settings
@@ -84,7 +85,7 @@ YOURLS is a single account system, so the plugin never creates users: the OpenID
 | Setting | Description |
 |---|---|
 | State Time Limit | Lifetime of a login attempt (default 180 seconds) |
-| Redirect URI Override | Optional custom callback URL, also registered at the provider |
+| Redirect URI Override | Optional custom callback URL, also registered at the provider. The logout URL is derived from it, so callback and logout stay on the same entry point |
 | Redirect Back to Origin Page | Return the user to the page they started from |
 | Redirect to IdP on logout | Ends the identity provider session when logging out |
 | Enable Logging / Log Limit | Keep a debug log (with viewer) and how many entries to keep |
@@ -106,7 +107,7 @@ define( 'OIDC_EMAIL_DOMAIN_RESTRICTION', 'example.com partner.org' );
 
 ## How it works
 1. The user is sent to the provider authorization endpoint with a random `state` and `nonce` (stored server side, single use, time limited).
-2. The provider returns an authorization code to `https://your-yourls/?icc_oidc=callback`, which the plugin handles *before* YOURLS runs its own authentication.
+2. The provider returns an authorization code to `https://your-yourls/?icc_oidc=callback` (or to the Redirect URI Override, when one is set), which the plugin handles *before* YOURLS runs its own authentication.
 3. The code is exchanged for tokens; the **ID token signature is verified against the provider JWKS** (cached, refreshed on key rotation) and its claims are validated (`iss`, `aud`, `azp`, `exp`, `iat`, `nbf`, `nonce`, `acr`).
 4. `userinfo` is requested when configured, and its subject must match the ID token.
 5. The identity is mapped to a YOURLS user from `user/config.php`: a known identity reuses its user, otherwise the identity claim is matched against the login name, and a single configured user is used when the claim does not match. No account is ever created, and an unlinked identity is refused when several users exist.
@@ -119,6 +120,8 @@ Plugins can hook into the flow: `icc_oidc_authentication_url_params`, `icc_oidc_
 * YOURLS' privacy setting (`YOURLS_PRIVATE` in `config.php`) is what forces authentication; the plugin works with it and never disables it.
 * Refresh tokens are not used: YOURLS keeps its own session cookie, so the last ID token is stored only to be sent as `id_token_hint` on logout.
 * HTTPS is required in production, and the provider endpoints must be reachable over the public internet unless *Allow Internal IdP* is enabled.
+* The callback and logout URLs have to be answered by YOURLS: `/?icc_oidc=callback` and `/?icc_oidc=logout` are only handled when the site root is served by YOURLS. On installations where another application, a landing page or a static `index.php` owns `/`, set the **Redirect URI Override** to a YOURLS entry point (for example `https://sho.rt/admin/index.php?icc_oidc=callback`), register it at the provider, and the logout URL follows it automatically. Without this, the provider response is served by that other page, so no login (and no error message) ever happens.
+* The **Notes** section of the plugin page shows both the effective **Redirect URI** and the effective **Logout URL**, and warns when the redirect URI does not point at the YOURLS installation.
 
 ## Development
 The unit/integration suite runs with plain PHP (no Composer, PHPUnit or database required) and includes the official RFC 7515 RS256/ES256 vectors, negative signature tests and simulated login flows:

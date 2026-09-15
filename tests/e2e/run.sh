@@ -174,6 +174,26 @@ SECOND=$(curl -s -L -c "${WORK}/c3.txt" -b "${WORK}/c3.txt" -o "${WORK}/admin2.h
 check 'second login reuses the linked account' "${SECOND}" '200'
 check 'still a single SSO login' "$(cli show | grep -c '"subject":"mock-user-1"')" '1'
 
+# --- 3b. Redirect URI override drives the callback and logout URLs ------------
+# Sites whose root is not served by YOURLS (a landing page owning "/", like
+# icc.gg) register a YOURLS entry point as redirect URI: the authorization
+# request and the logout link both have to use it.
+cli option icc_oidc_redirect_uri "http://127.0.0.1:${WEB_PORT}/admin/index.php?icc_oidc=callback" >/dev/null
+
+rm -f "${WORK}/c4.txt"
+OVERRIDE_FLOW=$(curl -s -L -c "${WORK}/c4.txt" -b "${WORK}/c4.txt" -o "${WORK}/admin-override.html" \
+    -w '%{http_code} %{url_effective}' "http://127.0.0.1:${WEB_PORT}/admin/index.php")
+check 'login completes through the overridden redirect URI' "${OVERRIDE_FLOW}" \
+    "200 http://127.0.0.1:${WEB_PORT}/admin/index.php"
+check 'admin page logout link uses the overridden entry point' \
+    "$(cat "${WORK}/admin-override.html")" \
+    'admin/index.php?icc_oidc=logout'
+check 'settings page shows the derived logout URL' \
+    "$(curl -s -b "${WORK}/c4.txt" "http://127.0.0.1:${WEB_PORT}/admin/plugins.php?page=icc_openid_client")" \
+    'admin/index.php?icc_oidc=logout'
+
+cli option icc_oidc_redirect_uri '' >/dev/null
+
 # --- 4. Tampered state is rejected -------------------------------------------
 check 'forged state is rejected' \
     "$(curl -s -o /dev/null -w '%{redirect_url}' "http://127.0.0.1:${WEB_PORT}/?icc_oidc=callback&code=whatever&state=forged")" \

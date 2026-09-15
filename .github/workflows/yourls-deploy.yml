@@ -31,10 +31,10 @@ jobs:
       # -------------------------------------------------------
       # 2. Resolve the version and the plugin identity.
       #     Nothing is hard coded: the plugin file, the plugin
-      #     name and both slugs are read from the 'Plugin Name:'
+      #     name and the slug are read from the 'Plugin Name:'
       #     header, so this workflow fits any YOURLS plugin.
-      #       plugin name -> zip file name (lowercase, underscores)
-      #       plugin name -> folder inside zip (lowercase, hyphens)
+      #       plugin name -> slug (lowercase, hyphens), used both
+      #       as the zip file name and as the folder inside it
       # -------------------------------------------------------
       - name: 🏷️ Resolve version and plugin identity
         id: identity
@@ -65,12 +65,11 @@ jobs:
             exit 1
           fi
 
-          # 'ICC OpenID Connect Client' -> 'icc_openid_connect_client' (zip file name)
-          ZIP_SLUG=$(printf '%s' "${PLUGIN_NAME}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')
-          # 'ICC OpenID Connect Client' -> 'icc-openid-connect-client' (folder inside the zip)
-          DIR_SLUG=$(printf '%s' "${PLUGIN_NAME}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+          # 'ICC OpenID Connect Client' -> 'icc-openid-connect-client'
+          # (the slug is both the zip file name and the folder inside the zip)
+          SLUG=$(printf '%s' "${PLUGIN_NAME}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
 
-          if [ -z "${ZIP_SLUG}" ] || [ -z "${DIR_SLUG}" ]; then
+          if [ -z "${SLUG}" ]; then
             echo "::error::Unable to derive a slug from the plugin name '${PLUGIN_NAME}'."
             exit 1
           fi
@@ -79,13 +78,12 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "plugin_name=${PLUGIN_NAME}" >> "$GITHUB_OUTPUT"
           echo "plugin_file=${PLUGIN_FILE}" >> "$GITHUB_OUTPUT"
-          echo "zip_slug=${ZIP_SLUG}" >> "$GITHUB_OUTPUT"
-          echo "dir_slug=${DIR_SLUG}" >> "$GITHUB_OUTPUT"
-          echo "zip_name=${ZIP_SLUG}.zip" >> "$GITHUB_OUTPUT"
+          echo "slug=${SLUG}" >> "$GITHUB_OUTPUT"
+          echo "zip_name=${SLUG}.zip" >> "$GITHUB_OUTPUT"
 
           echo "Plugin name ....: ${PLUGIN_NAME}"
           echo "Plugin file ....: ${PLUGIN_FILE}"
-          echo "Package ........: ${ZIP_SLUG}.zip -> ${DIR_SLUG}/plugin.php"
+          echo "Package ........: ${SLUG}.zip -> ${SLUG}/plugin.php"
           echo "Version ........: ${VERSION} (tag ${TAG})"
 
       # -------------------------------------------------------
@@ -157,11 +155,11 @@ jobs:
       # -------------------------------------------------------
       - name: 📦 Create YOURLS plugin ZIP
         run: |
-          DIR_SLUG="${{ steps.identity.outputs.dir_slug }}"
+          SLUG="${{ steps.identity.outputs.slug }}"
           ZIP_NAME="${{ steps.identity.outputs.zip_name }}"
           PLUGIN_FILE="${{ steps.identity.outputs.plugin_file }}"
           BUILD_ROOT="/tmp/yourls-build"
-          BUILD_DIR="${BUILD_ROOT}/${DIR_SLUG}"
+          BUILD_DIR="${BUILD_ROOT}/${SLUG}"
 
           rm -rf "${BUILD_ROOT}"
           mkdir -p "${BUILD_DIR}"
@@ -192,22 +190,21 @@ jobs:
             mv "${BUILD_DIR}/${PLUGIN_FILE}" "${BUILD_DIR}/plugin.php"
           fi
 
-          # Zip file name from the plugin name (underscores),
-          # root folder from the plugin name (hyphens).
+          # The zip file name and its root folder are the same slug.
           cd "${BUILD_ROOT}"
           rm -f "${GITHUB_WORKSPACE}/${ZIP_NAME}"
-          zip -r "${GITHUB_WORKSPACE}/${ZIP_NAME}" "${DIR_SLUG}/"
+          zip -r "${GITHUB_WORKSPACE}/${ZIP_NAME}" "${SLUG}/"
 
           echo "YOURLS package created: ${ZIP_NAME}"
           unzip -l "${GITHUB_WORKSPACE}/${ZIP_NAME}"
 
           # Sanity checks: plugin.php is present and carries the release version.
-          if ! unzip -l "${GITHUB_WORKSPACE}/${ZIP_NAME}" | grep -q "${DIR_SLUG}/plugin.php"; then
-            echo "::error::${ZIP_NAME} does not contain ${DIR_SLUG}/plugin.php."
+          if ! unzip -l "${GITHUB_WORKSPACE}/${ZIP_NAME}" | grep -q "${SLUG}/plugin.php"; then
+            echo "::error::${ZIP_NAME} does not contain ${SLUG}/plugin.php."
             exit 1
           fi
 
-          ZV=$(unzip -p "${GITHUB_WORKSPACE}/${ZIP_NAME}" "${DIR_SLUG}/plugin.php" | sed -nE 's/^[[:space:]]*Version:[[:space:]]*(.*)$/\1/p' | head -n 1 | tr -d '[:space:]')
+          ZV=$(unzip -p "${GITHUB_WORKSPACE}/${ZIP_NAME}" "${SLUG}/plugin.php" | sed -nE 's/^[[:space:]]*Version:[[:space:]]*(.*)$/\1/p' | head -n 1 | tr -d '[:space:]')
           if [ "${ZV}" != "${{ steps.identity.outputs.version }}" ]; then
             echo "::error::Packaged plugin.php has version '${ZV}', expected '${{ steps.identity.outputs.version }}'."
             exit 1
@@ -215,7 +212,7 @@ jobs:
 
           # No development path may leak into the package.
           for forbidden in tests .github docker README.md LICENSE .git; do
-            if unzip -l "${GITHUB_WORKSPACE}/${ZIP_NAME}" | grep -q "${DIR_SLUG}/${forbidden}"; then
+            if unzip -l "${GITHUB_WORKSPACE}/${ZIP_NAME}" | grep -q "${SLUG}/${forbidden}"; then
               echo "::error::Development path '${forbidden}' leaked into ${ZIP_NAME}."
               exit 1
             fi

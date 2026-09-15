@@ -30,7 +30,7 @@ Login to YOURLS with Single Sign-On using any OpenID Connect identity provider (
 * Project inspired by [ICC.gg Sign-In for OpenID Connect](https://github.com/ivancarlosti/wordpressiccopenidclient), the same plugin for WordPress.
 
 ## Instructions
-* Download the release ZIP `icc_openid_connect_client.zip`
+* Download the release ZIP `icc-openid-connect-client.zip`
 * Extract it into the YOURLS path `/user/plugins` &mdash; the archive unpacks the folder `icc-openid-connect-client` containing `plugin.php`, `manifest.json` and the `includes` folder
 * Activate the plugin in `/admin/plugins.php` page of your YOURLS installation
 * Access the `OpenID Connect` page from the admin menu

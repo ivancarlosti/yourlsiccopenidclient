@@ -1,5 +1,5 @@
 # ICC OpenID Connect Client plugin for YOURLS
-Login to YOURLS with Single Sign-On using any OpenID Connect identity provider (Keycloak, Entra ID, Google, Auth0, Okta, ...) through the Authorization Code Flow. Includes a login button on the login screen, automatic SSO redirection, email domain restriction, automatic account provisioning, single logout and a debug log - with no third party libraries bundled.
+Login to YOURLS with Single Sign-On using any OpenID Connect identity provider (Keycloak, Entra ID, Google, Auth0, Okta, ...) through the Authorization Code Flow. Includes a login button on the login screen, automatic SSO redirection, email domain restriction, single logout and a debug log - with no third party libraries bundled.
 
 <!-- buttons -->
 [![Stars](https://img.shields.io/github/stars/ivancarlosti/yourlsiccopenidclient?label=⭐%20Stars&color=gold&style=flat)](https://github.com/ivancarlosti/yourlsiccopenidclient/stargazers)
@@ -19,10 +19,10 @@ Login to YOURLS with Single Sign-On using any OpenID Connect identity provider (
 * **ID token signature verification** with the provider JWKS (RS256, RS384, RS512, ES256, ES384, ES512) plus `iss`, `aud`, `azp`, `exp`, `iat`, `nbf`, `nonce` and `acr` validation
 * Login **button on the YOURLS login screen**, "button only" mode (no password form) or **automatic SSO** redirection
 * **Single logout**: the YOURLS logout link also ends the identity provider session (`id_token_hint`, `post_logout_redirect_uri`)
-* **Account handling**: link to an existing `config.php` user and/or provision SSO accounts automatically
+* **Account handling**: signs in as the YOURLS user defined in `user/config.php` (the identity claim is matched against the login name, no account is ever created)
 * **Email domain restriction** (domains or full addresses) and configurable claim mapping (identity, nickname, display name, email)
 * **Quick Setup**: import every endpoint from the provider discovery document
-* **Debug log** with a viewer, plus optional **local 2FA bypass** (MFA is assumed at the identity provider)
+* **Debug log** with a viewer
 * Settings can be overridden with `OIDC_*` constants in `user/config.php`
 * No third party libraries: JWT/JWKS validation uses `ext-openssl` only
 
@@ -30,8 +30,8 @@ Login to YOURLS with Single Sign-On using any OpenID Connect identity provider (
 * Project inspired by [ICC.gg Sign-In for OpenID Connect](https://github.com/ivancarlosti/wordpressiccopenidclient), the same plugin for WordPress.
 
 ## Instructions
-* Download the plugin release
-* Create the folder `icc-openid-client` into YOURLS path `/user/plugins` and store `plugin.php`, `manifest.json` and the `includes` folder on it
+* Download the release ZIP `icc_openid_connect_client.zip`
+* Extract it into the YOURLS path `/user/plugins` &mdash; the archive unpacks the folder `icc-openid-connect-client` containing `plugin.php`, `manifest.json` and the `includes` folder
 * Activate the plugin in `/admin/plugins.php` page of your YOURLS installation
 * Access the `OpenID Connect` page from the admin menu
 * Paste your provider discovery URL (for example `https://sso.example.com/realms/myrealm/.well-known/openid-configuration`) and click **Load configuration**
@@ -72,15 +72,13 @@ The same procedure applies to Entra ID, Google, Auth0, Okta and other providers:
 ### User Settings
 | Setting | Description |
 |---|---|
-| Identity Key | Claim used as the YOURLS user name (`preferred_username`, `sub`, `email`, or a nested path) |
+| Identity Key | Claim matched against the YOURLS login from `user/config.php` (`preferred_username`, `sub`, `email`, or a nested path) |
 | Nickname Key | Claim used as the nickname |
 | Email Formatting | Claim string used to build the email address, e.g. `{email}` |
 | Display Name Formatting | Optional, e.g. `{given_name} {family_name}` |
-| Identify with User Name | Link accounts by user name instead of email address |
-| Link Existing Users | Log in as an existing YOURLS user with the same identity |
-| Create user if it does not exist | Provision an SSO account automatically at first login |
 | Email Domain Restriction | Space separated allowed domains or full addresses; empty allows all |
-| Bypass local 2FA on SSO login | Only enable when multi-factor authentication is enforced at the provider |
+
+YOURLS is a single account system, so the plugin never creates users: the OpenID Connect identity is matched to the login name of a user from `user/config.php`, and a single configured user is used when the claim does not match. The last identity used for each user is listed on the plugin page and can be forgotten there (the `config.php` user itself is never changed).
 
 ### Authorization and Log Settings
 | Setting | Description |
@@ -111,13 +109,13 @@ define( 'OIDC_EMAIL_DOMAIN_RESTRICTION', 'example.com partner.org' );
 2. The provider returns an authorization code to `https://your-yourls/?icc_oidc=callback`, which the plugin handles *before* YOURLS runs its own authentication.
 3. The code is exchanged for tokens; the **ID token signature is verified against the provider JWKS** (cached, refreshed on key rotation) and its claims are validated (`iss`, `aud`, `azp`, `exp`, `iat`, `nbf`, `nonce`, `acr`).
 4. `userinfo` is requested when configured, and its subject must match the ID token.
-5. The identity is mapped to a YOURLS user: a known identity, an existing `config.php` user (when *Link Existing Users* is on) or a newly provisioned SSO account.
-6. YOURLS' own session cookie is stored, so the rest of YOURLS works unchanged. With *Bypass local 2FA* enabled the cookie is also mirrored for the current request so local 2FA plugins skip their prompt.
+5. The identity is mapped to a YOURLS user from `user/config.php`: a known identity reuses its user, otherwise the identity claim is matched against the login name, and a single configured user is used when the claim does not match. No account is ever created, and an unlinked identity is refused when several users exist.
+6. YOURLS' own session cookie is stored, so the rest of YOURLS works unchanged.
 
-Plugins can hook into the flow: `icc_oidc_authentication_url_params`, `icc_oidc_login_button_text`, `icc_oidc_user_login_test`, `icc_oidc_user_creation_test`, `icc_oidc_redirect_after_login`, `icc_oidc_user_create`, `icc_oidc_user_update`, `icc_oidc_user_logged_in`, `icc_oidc_login_error`, `icc_oidc_logout`.
+Plugins can hook into the flow: `icc_oidc_authentication_url_params`, `icc_oidc_login_button_text`, `icc_oidc_user_login_test`, `icc_oidc_redirect_after_login`, `icc_oidc_user_update`, `icc_oidc_update_user_using_current_claim`, `icc_oidc_before_login`, `icc_oidc_user_logged_in`, `icc_oidc_login_error`, `icc_oidc_logout`.
 
 ## Notes and limitations
-* YOURLS has no user directory: accounts provisioned through SSO live in a plugin option and are injected into YOURLS' user list on every request. They can **never** be used with password login, and they are listed (and can be removed) on the plugin page.
+* YOURLS has no user directory and this plugin never creates accounts: Single Sign-On signs in as a user from `user/config.php`, and the identity used for each login is remembered in a plugin option (listed on the plugin page, where it can also be forgotten). Local password login keeps working, which is useful as a recovery path.
 * YOURLS' privacy setting (`YOURLS_PRIVATE` in `config.php`) is what forces authentication; the plugin works with it and never disables it.
 * Refresh tokens are not used: YOURLS keeps its own session cookie, so the last ID token is stored only to be sent as `id_token_hint` on logout.
 * HTTPS is required in production, and the provider endpoints must be reachable over the public internet unless *Allow Internal IdP* is enabled.
@@ -129,7 +127,7 @@ The unit/integration suite runs with plain PHP (no Composer, PHPUnit or database
 php tests/run-tests.php
 ```
 
-A real end to end test is also included: it downloads YOURLS into a temporary directory, starts MariaDB and a mock OpenID Connect provider (RS256) in Docker containers, and drives a full Single Sign-On login over HTTP (login button, automatic SSO redirect, code exchange, ID token verification, account provisioning, forged state rejection, single logout, settings page):
+A real end to end test is also included: it downloads YOURLS into a temporary directory, starts MariaDB and a mock OpenID Connect provider (RS256) in Docker containers, and drives a full Single Sign-On login over HTTP (login button, automatic SSO redirect, code exchange, ID token verification, mapping to the `config.php` user, forged state rejection, single logout, settings page):
 
 ```bash
 bash tests/e2e/run.sh      # requires docker, php CLI, curl

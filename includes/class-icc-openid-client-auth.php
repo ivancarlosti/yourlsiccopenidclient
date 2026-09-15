@@ -94,7 +94,6 @@ class ICC_OpenID_Client_Auth
 
         yourls_add_action('require_auth', array($auth, 'handle_require_auth'));
         yourls_add_filter('logout_link', array($auth, 'handle_logout_link'));
-        yourls_add_action('pre_login_username_password', array($auth, 'block_password_login'));
 
         return $auth;
     }
@@ -198,7 +197,7 @@ class ICC_OpenID_Client_Auth
             'email-domain-no-email'        => 'Your identity provider account has no email address.',
             'incorrect-user-claim'         => 'The identity provider returned inconsistent user data.',
             'cannot-authorize'             => 'Your account is not allowed to sign in here.',
-            'failed-user-creation'         => 'Your account could not be created. Please contact the administrator.',
+            'user-not-linked'              => 'Your identity is not linked to a YOURLS user. Please contact the administrator.',
             'userinfo-request-failed'      => 'The identity provider user information could not be retrieved.',
             'token-request-failed'         => 'The identity provider refused the login. Please try again.',
             'http-request-failed'          => 'The identity provider could not be reached.',
@@ -502,24 +501,6 @@ class ICC_OpenID_Client_Auth
     }
 
     /**
-     * Refuse password authentication for accounts managed through SSO.
-     *
-     * @return void
-     */
-    public function block_password_login()
-    {
-        $username = isset($_REQUEST['username']) ? (string) $_REQUEST['username'] : '';
-
-        if ($username === '' || !ICC_OpenID_Client_Store::is_virtual_user($username)) {
-            return;
-        }
-
-        $this->logger->log('Blocked password login attempt for SSO account "' . $username . '"', 'password-login-blocked');
-
-        yourls_die('Password login is disabled for this account, please use Single Sign-On.', 'Login blocked', 403);
-    }
-
-    /**
      * Find the user the current request is authenticated as (by cookie value).
      *
      * Needed because YOURLS defines YOURLS_USER only after authentication, which
@@ -604,10 +585,12 @@ class ICC_OpenID_Client_Auth
     }
 
     /**
-     * Map an authenticated IdP user to a YOURLS login.
+     * Map an authenticated IdP user to a YOURLS account.
      *
-     * Order: known identity, then (optionally) an existing YOURLS account, then
-     * (optionally) a newly provisioned SSO account.
+     * YOURLS is a single account system: users live in user/config.php and this
+     * plugin never creates them. The identity is therefore resolved, in order, to
+     * a known identity, to a config.php login matching the identity claim, or to
+     * the only configured user.
      *
      * @param array $id_token_claim Verified ID token claims.
      * @param array $user_claim     User claim.
@@ -625,122 +608,123 @@ class ICC_OpenID_Client_Auth
         }
 
         $username = $this->get_username_from_claim($user_claim, $subject);
-        $email = $this->get_email_from_claim($user_claim);
-        $nickname = $this->get_nickname_from_claim($user_claim, $username);
-        $displayname = $this->get_displayname_from_claim($user_claim, $username);
 
         $data = array(
             'subject'     => $subject,
-            'email'       => $email,
-            'nickname'    => $nickname,
-            'displayname' => $displayname,
+            'email'       => $this->get_email_from_claim($user_claim),
+            'nickname'    => $this->get_nickname_from_claim($user_claim, $username),
+            'displayname' => $this->get_displayname_from_claim($user_claim, $username),
         );
 
-        // 1) Identity already known.
+        // 1) Identity already known: keep using the YOURLS account it was linked to.
         $known = ICC_OpenID_Client_Store::find_login_by_subject($subject);
 
         if ($known !== null && $known !== '') {
-            $this->store->save($known, $data);
-            yourls_do_action('icc_oidc_update_user_using_current_claim', $known, $user_claim);
+            if ($this->is_config_login($known)) {
+                $this->store->save($known, $data);
+                yourls_do_action('icc_oidc_update_user_using_current_claim', $known, $user_claim);
 
-            return $known;
+                return $known;
+            }
+
+            // The account was renamed or removed in config.php: drop the stale
+            // mapping and resolve the identity again below.
+            $this->store->remove($known);
+            $this->logger->log('Discarded a stale identity mapping for "' . $known . '"', 'user-unlink');
         }
 
-        // 2) Link to an existing YOURLS account.
-        if ($this->setting('link_existing_users')) {
-            $existing = $this->find_existing_login($username, $email);
+        // 2) Match the identity claim against the logins defined in config.php.
+        $login = $this->match_config_login($username);
 
-            if ($existing !== null && $existing !== '') {
-                $this->store->save($existing, array_merge($data, array('linked' => 1)));
-                yourls_do_action('icc_oidc_user_update', $existing);
-                $this->logger->log('Linked OpenID Connect identity to existing user ' . $existing, 'user-link');
+        // 3) Single account installations: the IdP user is the YOURLS user.
+        if ($login === '') {
+            $logins = $this->config_logins();
 
-                return $existing;
+            if (count($logins) === 1) {
+                $login = (string) $logins[0];
             }
         }
 
-        // 3) Provision a new SSO account.
-        /**
-         * Allow plugins to refuse the creation of new accounts.
-         *
-         * @param bool  $create     Whether the account may be created.
-         * @param array $user_claim User claim.
-         */
-        $create = yourls_apply_filter('icc_oidc_user_creation_test', (bool) $this->setting('create_if_does_not_exist'), $user_claim);
-
-        if (!$create) {
-            throw new ICC_OpenID_Client_Error('cannot-authorize', 'This account is not allowed to sign in.');
+        if ($login === '') {
+            throw new ICC_OpenID_Client_Error(
+                'user-not-linked',
+                'The identity "' . $username . '" is not linked to a YOURLS account.'
+            );
         }
 
-        $login = $this->unique_login($username);
-        $this->store->save($login, array_merge($data, array('linked' => 0)));
-        $this->register_runtime_user($login);
-        yourls_do_action('icc_oidc_user_create', $login, $user_claim);
-        $this->logger->log('Created SSO account ' . $login, 'user-create');
+        $this->store->save($login, $data);
+        yourls_do_action('icc_oidc_user_update', $login);
+        $this->logger->log('OpenID Connect identity linked to the YOURLS user ' . $login, 'user-link');
 
         return $login;
     }
 
     /**
-     * Find an existing YOURLS account to link the identity to.
+     * Logins defined in user/config.php.
+     *
+     * @return array List of login names.
+     */
+    protected function config_logins()
+    {
+        global $yourls_user_passwords;
+
+        if (!is_array($yourls_user_passwords)) {
+            return array();
+        }
+
+        $logins = array();
+
+        foreach ($yourls_user_passwords as $login => $password) {
+            if (is_string($login) && $login !== '') {
+                $logins[] = $login;
+            }
+        }
+
+        return $logins;
+    }
+
+    /**
+     * Is a login defined in user/config.php?
+     *
+     * @param string $login YOURLS login.
+     *
+     * @return bool
+     */
+    protected function is_config_login($login)
+    {
+        $login = (string) $login;
+
+        foreach ($this->config_logins() as $configured) {
+            if (strcasecmp($configured, $login) === 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Match the identity claim against the logins defined in config.php.
      *
      * @param string $username Claim based user name.
-     * @param string $email    Claim based email address.
      *
-     * @return string|null Login, or null when nothing matches.
+     * @return string The matching login, or an empty string.
      */
-    protected function find_existing_login($username, $email)
+    protected function match_config_login($username)
     {
-        // Email of an already known SSO account.
-        $by_email = ICC_OpenID_Client_Store::find_login_by_email($email);
+        $username = trim((string) $username);
 
-        if ($by_email !== null && $by_email !== '') {
-            return $by_email;
+        if ($username === '') {
+            return '';
         }
 
-        global $yourls_user_passwords;
-
-        if (!is_array($yourls_user_passwords) || $username === '') {
-            return null;
+        foreach ($this->config_logins() as $login) {
+            if (strcasecmp($login, $username) === 0) {
+                return $login;
+            }
         }
 
-        // YOURLS users live in config.php, so the only shared attribute is the login name.
-        if (isset($yourls_user_passwords[$username])) {
-            return $username;
-        }
-
-        return null;
-    }
-
-    /**
-     * Make sure a login is unique across config.php users and SSO accounts.
-     *
-     * @param string $candidate Claim based login candidate.
-     *
-     * @return string
-     */
-    protected function unique_login($candidate)
-    {
-        global $yourls_user_passwords;
-
-        $login = $this->sanitize_login($candidate);
-
-        if ($login === '') {
-            $login = 'sso-user';
-        }
-
-        $base = $login;
-        $count = 1;
-
-        while (
-            (is_array($yourls_user_passwords) && isset($yourls_user_passwords[$login]))
-            || ICC_OpenID_Client_Store::get($login) !== null
-        ) {
-            $count++;
-            $login = $base . '-' . $count;
-        }
-
-        return $login;
+        return '';
     }
 
     /**
@@ -774,29 +758,6 @@ class ICC_OpenID_Client_Auth
     }
 
     /**
-     * Add a provisioned account to the runtime user list.
-     *
-     * YOURLS verifies the auth cookie against $yourls_user_passwords, so new
-     * accounts must be present before the cookie is stored.
-     *
-     * @param string $login YOURLS login.
-     *
-     * @return void
-     */
-    protected function register_runtime_user($login)
-    {
-        global $yourls_user_passwords;
-
-        if (!is_array($yourls_user_passwords)) {
-            $yourls_user_passwords = array();
-        }
-
-        if (!isset($yourls_user_passwords[$login])) {
-            $yourls_user_passwords[$login] = 'phpass:' . ICC_OpenID_Client_Store::unusable_password_hash($login);
-        }
-    }
-
-    /**
      * Log the user in: set YOURLS_USER and store the YOURLS auth cookie.
      *
      * @param string $login    YOURLS login.
@@ -806,23 +767,10 @@ class ICC_OpenID_Client_Auth
      */
     protected function login_user($login, $id_token = '')
     {
-        $this->register_runtime_user($login);
-
         yourls_set_user($login);
         yourls_do_action('icc_oidc_before_login', $login);
 
         yourls_store_cookie($login);
-
-        if (
-            $this->setting('two_factor_bypass')
-            && function_exists('yourls_cookie_name')
-            && function_exists('yourls_cookie_value')
-        ) {
-            // Mirror the cookie in the current request so local 2FA plugins that
-            // check for it skip their prompt (MFA is assumed at the IdP).
-            $_COOKIE[yourls_cookie_name()] = yourls_cookie_value($login);
-            $this->logger->log('Local 2FA bypassed for SSO login (MFA handled by the identity provider).', '2fa-bypass');
-        }
 
         $this->store->record_login($login, $id_token);
 

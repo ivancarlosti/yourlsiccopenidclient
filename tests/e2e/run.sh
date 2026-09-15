@@ -55,9 +55,9 @@ curl -sSL --max-time 180 "https://github.com/YOURLS/YOURLS/archive/refs/tags/${Y
 tar xzf "${WORK}/yourls.tar.gz" -C "${WORK}"
 mv "${WORK}/YOURLS-${YOURLS_VERSION}" "${APP}"
 
-mkdir -p "${APP}/user/plugins/icc-openid-client"
-cp "${REPO_DIR}/plugin.php" "${REPO_DIR}/manifest.json" "${APP}/user/plugins/icc-openid-client/"
-cp -r "${REPO_DIR}/includes" "${APP}/user/plugins/icc-openid-client/"
+mkdir -p "${APP}/user/plugins/icc-openid-connect-client"
+cp "${REPO_DIR}/plugin.php" "${REPO_DIR}/manifest.json" "${APP}/user/plugins/icc-openid-connect-client/"
+cp -r "${REPO_DIR}/includes" "${APP}/user/plugins/icc-openid-connect-client/"
 
 cat > "${APP}/user/config.php" <<'PHP'
 <?php
@@ -164,15 +164,15 @@ else
 fi
 
 STORE=$(cli show)
-check 'SSO account provisioned from the claims' "${STORE}" '"ssouser"'
+check 'SSO login recorded for the config.php user' "${STORE}" '"admin"'
 check 'subject, email and display name stored' "${STORE}" '"email":"ssouser@example.com"'
 check 'successful login written to the debug log' "${STORE}" 'login-success'
 
 # --- 3. Second login with the same identity ----------------------------------
 SECOND=$(curl -s -L -c "${WORK}/c3.txt" -b "${WORK}/c3.txt" -o "${WORK}/admin2.html" \
     -w '%{http_code}' "http://127.0.0.1:${WEB_PORT}/admin/index.php")
-check 'second login reuses the provisioned account' "${SECOND}" '200'
-check 'still a single SSO account' "$(cli show | grep -c '"subject":"mock-user-1"')" '1'
+check 'second login reuses the linked account' "${SECOND}" '200'
+check 'still a single SSO login' "$(cli show | grep -c '"subject":"mock-user-1"')" '1'
 
 # --- 4. Tampered state is rejected -------------------------------------------
 check 'forged state is rejected' \
@@ -191,7 +191,7 @@ check 'logout sends id_token_hint' "${LOGOUT}" 'id_token_hint='
 # --- 6. Settings page --------------------------------------------------------
 SETTINGS=$(curl -s -b "${WORK}/c2.txt" "http://127.0.0.1:${WEB_PORT}/admin/plugins.php?page=icc_openid_client")
 check 'settings page renders' "${SETTINGS}" 'Client Settings'
-check 'settings page lists the provisioned SSO user' "${SETTINGS}" 'ssouser'
+check 'settings page lists the SSO login' "${SETTINGS}" '<strong>admin</strong>'
 
 # --- Summary -----------------------------------------------------------------
 echo '--------------------------------------------------------------------'

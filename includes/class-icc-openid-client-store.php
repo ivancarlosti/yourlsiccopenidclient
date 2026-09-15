@@ -1,11 +1,12 @@
 <?php
 /**
- * SSO user store.
+ * SSO login store.
  *
- * YOURLS keeps its users in user/config.php ($yourls_user_passwords), so SSO
- * accounts are stored in a plugin option and injected into that global at
- * plugin load time. This is what allows YOURLS' own cookie verification to
- * accept them, while password authentication stays impossible for them.
+ * YOURLS keeps its users in user/config.php ($yourls_user_passwords) and this
+ * plugin never creates users: an OpenID Connect identity is mapped to one of
+ * those accounts. This option only remembers which identity was used for which
+ * login (plus the last login time and ID token, the latter being sent as
+ * id_token_hint on logout).
  *
  * @package   ICC_OpenID_Client
  * @category  Authentication
@@ -23,7 +24,7 @@ if (!defined('YOURLS_ABSPATH'))
 class ICC_OpenID_Client_Store
 {
     /**
-     * Option holding the SSO users.
+     * Option holding the SSO logins.
      */
     const OPTION = 'icc_oidc_users';
 
@@ -43,7 +44,7 @@ class ICC_OpenID_Client_Store
     }
 
     /**
-     * All stored SSO users.
+     * All stored SSO logins.
      *
      * @return array login => data
      */
@@ -55,7 +56,7 @@ class ICC_OpenID_Client_Store
     }
 
     /**
-     * Get a stored SSO user.
+     * Get a stored SSO login.
      *
      * @param string $login YOURLS login.
      *
@@ -69,7 +70,7 @@ class ICC_OpenID_Client_Store
     }
 
     /**
-     * Find a stored user by OpenID Connect subject identity.
+     * Find a stored login by OpenID Connect subject identity.
      *
      * @param string $subject Subject ("sub" claim).
      *
@@ -93,36 +94,12 @@ class ICC_OpenID_Client_Store
     }
 
     /**
-     * Find a stored user by email address.
+     * Create or update the mapping of an OpenID Connect identity to a YOURLS login.
      *
-     * @param string $email Email address.
+     * @param string $login YOURLS login (an account from user/config.php).
+     * @param array  $data  Identity data.
      *
-     * @return string|null The login, or null when unknown.
-     */
-    public static function find_login_by_email($email)
-    {
-        $email = strtolower(trim((string) $email));
-
-        if ($email === '') {
-            return null;
-        }
-
-        foreach (self::all() as $login => $data) {
-            if (is_array($data) && !empty($data['email']) && strtolower((string) $data['email']) === $email) {
-                return (string) $login;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Create or update an SSO user.
-     *
-     * @param string $login YOURLS login.
-     * @param array  $data  User data.
-     *
-     * @return array The saved user.
+     * @return array The saved entry.
      */
     public function save($login, array $data)
     {
@@ -135,7 +112,6 @@ class ICC_OpenID_Client_Store
                 'email'        => '',
                 'nickname'     => '',
                 'displayname'  => '',
-                'linked'       => 0,
                 'created'      => time(),
                 'last_login'   => 0,
                 'last_id_token' => '',
@@ -150,11 +126,11 @@ class ICC_OpenID_Client_Store
     }
 
     /**
-     * Delete a stored SSO user.
+     * Delete a stored SSO login.
      *
      * @param string $login YOURLS login.
      *
-     * @return bool True when a user was removed.
+     * @return bool True when an entry was removed.
      */
     public function remove($login)
     {
@@ -184,72 +160,5 @@ class ICC_OpenID_Client_Store
             'last_login'    => time(),
             'last_id_token' => (string) $id_token,
         ));
-    }
-
-    /**
-     * Inject stored SSO users into YOURLS' user list.
-     *
-     * Must run while the plugin file is included (before any authentication
-     * happens) so cookie verification accepts SSO accounts. Users already
-     * defined in user/config.php are never overridden.
-     *
-     * @return void
-     */
-    public static function inject_virtual_users()
-    {
-        global $yourls_user_passwords;
-
-        if (!isset($yourls_user_passwords) || !is_array($yourls_user_passwords)) {
-            $yourls_user_passwords = array();
-        }
-
-        foreach (self::all() as $login => $data) {
-            if (!is_string($login) || $login === '' || isset($yourls_user_passwords[$login])) {
-                continue;
-            }
-
-            $yourls_user_passwords[$login] = 'phpass:' . self::unusable_password_hash($login);
-        }
-    }
-
-    /**
-     * Build an unverifiable password hash for an SSO account.
-     *
-     * The value is keyed with YOURLS' own secret, so it can neither be matched
-     * through password_verify() nor guessed as a clear text password.
-     *
-     * @param string $login YOURLS login.
-     *
-     * @return string
-     */
-    public static function unusable_password_hash($login)
-    {
-        if (function_exists('yourls_salt')) {
-            $secret = yourls_salt('icc-oidc-password:' . $login);
-        } else {
-            $key = defined('YOURLS_COOKIEKEY') ? YOURLS_COOKIEKEY : '';
-            $secret = hash('sha256', 'icc-oidc-password:' . $login . '|' . $key);
-        }
-
-        return hash('sha256', $secret . '|unusable');
-    }
-
-    /**
-     * Is this login an SSO managed account (not a config.php password account)?
-     *
-     * @param string $login YOURLS login.
-     *
-     * @return bool
-     */
-    public static function is_virtual_user($login)
-    {
-        $user = self::get($login);
-
-        if ($user === null) {
-            return false;
-        }
-
-        // Linked accounts exist in config.php and keep their password login.
-        return (int) (isset($user['linked']) ? $user['linked'] : 0) !== 1;
     }
 }

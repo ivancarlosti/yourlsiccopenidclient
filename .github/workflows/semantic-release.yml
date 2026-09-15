@@ -65,11 +65,11 @@ jobs:
           echo "✅ GitHub Release ${TAG} created."
           echo "Dispatching build.yml for version ${TAG}"
           gh workflow run build.yml -f version="${TAG}"
-          if gh workflow view wordpress-deploy.yml &>/dev/null; then
-            echo "Dispatching wordpress-deploy.yml for version ${TAG}"
-            gh workflow run wordpress-deploy.yml -f version="${TAG}"
+          if gh workflow view yourls-deploy.yml &>/dev/null; then
+            echo "Dispatching yourls-deploy.yml for version ${TAG}"
+            gh workflow run yourls-deploy.yml -f version="${TAG}"
           else
-            echo "Skipping wordpress-deploy.yml — not a WordPress plugin"
+            echo "Skipping yourls-deploy.yml — no deploy workflow found"
           fi
           echo "new_release_version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "new_release_published=true" >> "$GITHUB_OUTPUT"
@@ -168,15 +168,15 @@ jobs:
           gh workflow run build.yml \
             -f version="v${{ steps.version.outputs.new_release_version }}"
 
-      - name: 🎯 Trigger WordPress deploy workflow
+      - name: 🎯 Trigger YOURLS deploy workflow
         if: inputs.version == '' && steps.version.outputs.new_release_published == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh workflow view wordpress-deploy.yml &>/dev/null; then
-            echo "Dispatching wordpress-deploy.yml for version v${{ steps.version.outputs.new_release_version }}"
-            gh workflow run wordpress-deploy.yml \
+          if gh workflow view yourls-deploy.yml &>/dev/null; then
+            echo "Dispatching yourls-deploy.yml for version v${{ steps.version.outputs.new_release_version }}"
+            gh workflow run yourls-deploy.yml \
               -f version="v${{ steps.version.outputs.new_release_version }}"
           else
-            echo "Skipping wordpress-deploy.yml — not a WordPress plugin"
+            echo "Skipping yourls-deploy.yml — no deploy workflow found"
           fi

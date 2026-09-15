@@ -108,17 +108,14 @@ class ICC_OpenID_Client_Settings_Page
                 ),
             ),
             'user_settings' => array(
-                'title'  => 'User Settings',
-                'fields' => array(
-                    'identity_key'             => array('label' => 'Identity Key', 'type' => 'text', 'hint' => 'Claim used as the YOURLS user name, e.g. preferred_username or sub.'),
+                'title'       => 'User Settings',
+                'description' => 'Single Sign-On signs in as a YOURLS user defined in user/config.php: the identity claim is matched against the login name (and a single YOURLS user is used when the claim does not match). No account is ever created here.',
+                'fields'      => array(
+                    'identity_key'             => array('label' => 'Identity Key', 'type' => 'text', 'hint' => 'Claim matched against the YOURLS login from user/config.php, e.g. preferred_username, sub or email.'),
                     'nickname_key'             => array('label' => 'Nickname Key', 'type' => 'text', 'hint' => 'Claim used as the nickname.'),
                     'email_format'             => array('label' => 'Email Formatting', 'type' => 'text', 'hint' => 'Claim string used to build the email, e.g. {email}.'),
                     'displayname_format'       => array('label' => 'Display Name Formatting', 'type' => 'text', 'hint' => 'Optional, e.g. {given_name} {family_name}.'),
-                    'identify_with_username'   => array('label' => 'Identify with User Name', 'type' => 'checkbox', 'hint' => 'Link accounts by user name instead of email address.'),
-                    'link_existing_users'      => array('label' => 'Link Existing Users', 'type' => 'checkbox', 'hint' => 'Log in as an existing YOURLS user with the same identity.'),
-                    'create_if_does_not_exist' => array('label' => 'Create user if it does not exist', 'type' => 'checkbox', 'hint' => 'Provision an SSO account automatically at first login.'),
                     'email_domain_restriction' => array('label' => 'Email Domain Restriction', 'type' => 'text', 'hint' => 'Space separated allowed domains or email addresses. Empty allows all.'),
-                    'two_factor_bypass'        => array('label' => 'Bypass local 2FA on SSO login', 'type' => 'checkbox', 'hint' => 'Only enable when MFA is enforced at the identity provider.'),
                 ),
             ),
             'session_settings' => array(
@@ -298,7 +295,7 @@ class ICC_OpenID_Client_Settings_Page
     }
 
     /**
-     * Remove a stored SSO user.
+     * Forget the OpenID Connect identity linked to a YOURLS user.
      *
      * @return void
      */
@@ -308,14 +305,15 @@ class ICC_OpenID_Client_Settings_Page
         $store = new ICC_OpenID_Client_Store($this->logger);
 
         if ($login === '' || !$store->remove($login)) {
-            $this->notices[] = array('error', 'The SSO user could not be removed.');
+            $this->notices[] = array('error', 'The SSO login could not be found.');
 
             return;
         }
 
         $this->notices[] = array(
             'success',
-            'Removed "' . $login . '". An existing session for this user stays valid until its cookie expires.',
+            'Forgot the OpenID Connect identity linked to "' . $login . '". '
+                . 'The YOURLS user in config.php is unchanged and is linked again on the next SSO login.',
         );
     }
 
@@ -345,6 +343,10 @@ class ICC_OpenID_Client_Settings_Page
 
         foreach ($this->fields() as $section_key => $section) {
             echo '<h3>' . icc_oidc_esc_html($section['title']) . '</h3>' . "\n";
+
+            if (!empty($section['description'])) {
+                echo '<p><small>' . icc_oidc_esc_html($section['description']) . '</small></p>' . "\n";
+            }
 
             foreach ($section['fields'] as $key => $field) {
                 $this->render_field($key, $field, $settings);
@@ -462,7 +464,7 @@ class ICC_OpenID_Client_Settings_Page
     }
 
     /**
-     * Output the list of provisioned SSO users.
+     * Output the YOURLS accounts used by Single Sign-On.
      *
      * @return void
      */
@@ -471,10 +473,12 @@ class ICC_OpenID_Client_Settings_Page
         $users = ICC_OpenID_Client_Store::all();
 
         echo '<hr style="margin-top: 40px" />' . "\n";
-        echo '<h3>SSO Users</h3>' . "\n";
+        echo '<h3>SSO Logins</h3>' . "\n";
+        echo '<p><small>Last OpenID Connect identity used for each YOURLS user from user/config.php. '
+            . 'Forgetting an identity only clears this list: the next SSO login links it again.</small></p>' . "\n";
 
         if (empty($users)) {
-            echo '<p>No SSO account has been provisioned yet.</p>' . "\n";
+            echo '<p>No Single Sign-On login has been recorded yet.</p>' . "\n";
 
             return;
         }
@@ -482,7 +486,7 @@ class ICC_OpenID_Client_Settings_Page
         echo '<table style="width:100%;border-collapse:collapse;">' . "\n";
         echo '<thead><tr>';
 
-        foreach (array('User', 'Subject', 'Email', 'Display name', 'Type', 'Last login', '') as $heading) {
+        foreach (array('User', 'Subject', 'Email', 'Display name', 'Last login', '') as $heading) {
             echo '<th style="text-align:left;border-bottom:1px solid #ccc;padding:4px;">'
                 . icc_oidc_esc_html($heading) . '</th>';
         }
@@ -494,7 +498,6 @@ class ICC_OpenID_Client_Settings_Page
                 continue;
             }
 
-            $linked = (int) (isset($data['linked']) ? $data['linked'] : 0) === 1;
             $last_login = isset($data['last_login']) ? intval($data['last_login']) : 0;
 
             echo '<tr>';
@@ -506,23 +509,19 @@ class ICC_OpenID_Client_Settings_Page
             echo '<td style="border-bottom:1px solid #eee;padding:4px;">'
                 . icc_oidc_esc_html(isset($data['displayname']) ? $data['displayname'] : '') . '</td>';
             echo '<td style="border-bottom:1px solid #eee;padding:4px;">'
-                . icc_oidc_esc_html($linked ? 'linked to config.php user' : 'SSO only') . '</td>';
-            echo '<td style="border-bottom:1px solid #eee;padding:4px;">'
                 . icc_oidc_esc_html($last_login > 0 ? date('Y-m-d H:i:s', $last_login) : 'never') . '</td>';
             echo '<td style="border-bottom:1px solid #eee;padding:4px;">';
 
-            if (!$linked) {
-                echo '<form method="post" action="" style="margin:0;">';
+            echo '<form method="post" action="" style="margin:0;">';
 
-                if (function_exists('yourls_nonce_field')) {
-                    yourls_nonce_field(self::NONCE_ACTION);
-                }
-
-                echo '<input type="hidden" name="icc_oidc_action" value="remove_user" />';
-                echo '<input type="hidden" name="icc_oidc_user" value="' . icc_oidc_esc_attr($login) . '" />';
-                echo '<input type="submit" class="button" value="Remove" />';
-                echo '</form>';
+            if (function_exists('yourls_nonce_field')) {
+                yourls_nonce_field(self::NONCE_ACTION);
             }
+
+            echo '<input type="hidden" name="icc_oidc_action" value="remove_user" />';
+            echo '<input type="hidden" name="icc_oidc_user" value="' . icc_oidc_esc_attr($login) . '" />';
+            echo '<input type="submit" class="button" value="Forget" />';
+            echo '</form>';
 
             echo '</td>';
             echo '</tr>' . "\n";

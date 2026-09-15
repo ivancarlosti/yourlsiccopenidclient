@@ -589,11 +589,7 @@ function icc_settings(array $overrides = array())
             'nickname_key'             => 'preferred_username',
             'email_format'             => '{email}',
             'displayname_format'       => '{given_name} {family_name}',
-            'create_if_does_not_exist' => 1,
-            'link_existing_users'      => 0,
-            'identify_with_username'   => 0,
             'email_domain_restriction' => '',
-            'two_factor_bypass'        => 0,
             'redirect_user_back'       => 0,
             'redirect_on_logout'       => 1,
             'redirect_uri'             => '',
@@ -1217,47 +1213,40 @@ test('HTTP: YOURLS helpers are wrapped into a normalized response', function () 
 // User store
 // ---------------------------------------------------------------------------
 
-test('Store: SSO accounts are injected without touching config.php users', function () {
+test('Store: identities are remembered without touching config.php users', function () {
     icc_reset();
 
     $GLOBALS['yourls_user_passwords'] = array('admin' => 'phpass:$2y$hash');
-    yourls_update_option('icc_oidc_users', array(
-        'jdoe' => array('subject' => 'sub-1', 'email' => 'jdoe@example.com', 'linked' => 0),
-    ));
 
-    ICC_OpenID_Client_Store::inject_virtual_users();
+    $store = new ICC_OpenID_Client_Store();
+    $store->save('admin', array('subject' => 'sub-1', 'email' => 'admin@example.com'));
 
     assert_same('phpass:$2y$hash', $GLOBALS['yourls_user_passwords']['admin'], 'config.php user untouched');
-    assert_true(isset($GLOBALS['yourls_user_passwords']['jdoe']), 'SSO account injected');
-    assert_contains('phpass:', $GLOBALS['yourls_user_passwords']['jdoe']);
-    assert_false(password_verify('', $GLOBALS['yourls_user_passwords']['jdoe']), 'empty password rejected');
-
-    $hash = substr($GLOBALS['yourls_user_passwords']['jdoe'], strlen('phpass:'));
-    assert_false(password_verify($hash, 'phpass:' . $hash), 'the injected hash is not a valid password hash');
+    assert_same(array('admin'), array_keys($GLOBALS['yourls_user_passwords']), 'no account is ever added');
+    assert_same('admin', ICC_OpenID_Client_Store::find_login_by_subject('sub-1'));
 });
 
-test('Store: find, save, remove and virtual user detection', function () {
+test('Store: find, save, record and remove an identity', function () {
     icc_reset();
 
     $store = new ICC_OpenID_Client_Store();
     $store->save('jdoe', array('subject' => 'sub-1', 'email' => 'jdoe@example.com'));
 
     assert_same('jdoe', ICC_OpenID_Client_Store::find_login_by_subject('sub-1'));
-    assert_same('jdoe', ICC_OpenID_Client_Store::find_login_by_email('JDOE@example.com'));
-    assert_same(null, ICC_OpenID_Client_Store::find_login_by_email('nobody@example.com'));
     assert_same(null, ICC_OpenID_Client_Store::find_login_by_subject('nope'));
-    assert_true(ICC_OpenID_Client_Store::is_virtual_user('jdoe'), 'SSO only account');
+
+    $user = ICC_OpenID_Client_Store::get('jdoe');
+    assert_same('sub-1', $user['subject']);
+    assert_same(0, (int) $user['last_login'], 'no login recorded yet');
 
     $store->record_login('jdoe', 'the-id-token');
     $user = ICC_OpenID_Client_Store::get('jdoe');
     assert_same('the-id-token', $user['last_id_token']);
     assert_true(intval($user['last_login']) > 0, 'last login recorded');
 
-    $store->save('admin', array('subject' => 'sub-2', 'linked' => 1));
-    assert_false(ICC_OpenID_Client_Store::is_virtual_user('admin'), 'linked account keeps password login');
-
-    assert_true($store->remove('jdoe'), 'user removed');
+    assert_true($store->remove('jdoe'), 'login removed');
     assert_same(null, ICC_OpenID_Client_Store::get('jdoe'));
+    assert_false($store->remove('jdoe'), 'removing twice has nothing to remove');
 });
 
 // ---------------------------------------------------------------------------
@@ -1299,7 +1288,8 @@ test('Settings: defaults, casting and options round trip', function () {
     assert_same('button', icc_oidc_get('login_type'), 'default login type');
     assert_same('openid profile email', icc_oidc_get('scope'));
     assert_same(3600, icc_oidc_get('jwks_cache_ttl'));
-    assert_same(1, icc_oidc_get('create_if_does_not_exist'));
+    assert_same('', icc_oidc_get('create_if_does_not_exist'), 'account provisioning setting is gone');
+    assert_same('', icc_oidc_get('two_factor_bypass'), 'local 2FA bypass setting is gone');
 
     yourls_update_option('icc_oidc_jwks_cache_ttl', '900');
     assert_same(900, icc_oidc_get('jwks_cache_ttl'), 'integer setting cast');
@@ -1375,81 +1365,112 @@ function icc_run_callback(array $settings, array $claims = array())
     throw new ICC_Test_Assertion('the callback did not redirect');
 }
 
-test('Auth: successful callback provisions a user and logs in', function () {
+test('Auth: successful callback signs in as the single config.php user', function () {
     icc_reset();
 
-    $url = icc_run_callback(array('create_if_does_not_exist' => 1));
+    $GLOBALS['yourls_user_passwords'] = array('admin' => 'phpass:$2y$existinghash');
+
+    $url = icc_run_callback(array());
 
     assert_same('https://sho.rt/admin/index.php', $url, 'redirect target');
-    assert_same('jdoe', $GLOBALS['icc']['set_user'], 'YOURLS user set');
-    assert_same('jdoe', $GLOBALS['icc']['cookie'], 'auth cookie stored');
+    assert_same('admin', $GLOBALS['icc']['set_user'], 'YOURLS user set');
+    assert_same('admin', $GLOBALS['icc']['cookie'], 'auth cookie stored');
 
-    $user = ICC_OpenID_Client_Store::get('jdoe');
+    $user = ICC_OpenID_Client_Store::get('admin');
     assert_same('user-abc-123', $user['subject'], 'subject stored');
     assert_same('jdoe@example.com', $user['email'], 'email stored');
     assert_same('John Doe', $user['displayname'], 'display name built from the format');
-    assert_same(0, (int) $user['linked'], 'provisioned, not linked');
-    assert_true(isset($GLOBALS['yourls_user_passwords']['jdoe']), 'user usable for cookie verification');
+    assert_same(array('admin'), array_keys($GLOBALS['yourls_user_passwords']), 'no account was created');
     assert_true(in_array('icc_oidc_user_logged_in', $GLOBALS['icc']['actions'], true), 'logged in action fired');
+});
+
+test('Auth: the identity claim selects the matching config.php user', function () {
+    icc_reset();
+
+    $GLOBALS['yourls_user_passwords'] = array(
+        'admin' => 'phpass:$2y$hash-1',
+        'jdoe'  => 'phpass:$2y$hash-2',
+    );
+
+    $url = icc_run_callback(array());
+
+    assert_same('https://sho.rt/admin/index.php', $url);
+    assert_same('jdoe', $GLOBALS['icc']['set_user'], 'the login matching preferred_username is used');
+
+    $user = ICC_OpenID_Client_Store::get('jdoe');
+    assert_same('user-abc-123', $user['subject'], 'mapping stored for that login');
+    assert_same(null, ICC_OpenID_Client_Store::get('admin'), 'no mapping for the other user');
+});
+
+test('Auth: an unknown identity is refused when several users exist', function () {
+    icc_reset();
+
+    $GLOBALS['yourls_user_passwords'] = array(
+        'admin'     => 'phpass:$2y$hash-1',
+        'webmaster' => 'phpass:$2y$hash-2',
+    );
+
+    $url = icc_run_callback(array(), array('preferred_username' => 'someone-else'));
+
+    assert_contains('icc_oidc_error=user-not-linked', $url, 'identity not linked');
+    assert_same(null, $GLOBALS['icc']['set_user'], 'no YOURLS user was signed in');
+    assert_same(array(), ICC_OpenID_Client_Store::all(), 'nothing was stored');
 });
 
 test('Auth: second login reuses the known identity', function () {
     icc_reset();
 
+    $GLOBALS['yourls_user_passwords'] = array('admin' => 'phpass:$2y$existinghash');
+
     icc_run_callback(array());
     icc_run_callback(array(), array('email' => 'new-address@example.com'));
 
     $users = ICC_OpenID_Client_Store::all();
-    assert_same(1, count($users), 'still a single account');
-    assert_same('new-address@example.com', $users['jdoe']['email'], 'claims refreshed');
-    assert_same('user-abc-123', $users['jdoe']['subject'], 'subject unchanged');
+    assert_same(1, count($users), 'still a single login mapped');
+    assert_same('new-address@example.com', $users['admin']['email'], 'claims refreshed');
+    assert_same('user-abc-123', $users['admin']['subject'], 'subject unchanged');
 });
 
-test('Auth: existing YOURLS user can be linked', function () {
+test('Auth: a stale identity mapping is discarded and resolved again', function () {
     icc_reset();
 
-    $GLOBALS['yourls_user_passwords'] = array('jdoe' => 'phpass:$2y$existinghash');
+    $GLOBALS['yourls_user_passwords'] = array('admin' => 'phpass:$2y$existinghash');
 
-    $url = icc_run_callback(array('link_existing_users' => 1, 'identify_with_username' => 1));
+    // Mapping left over from an account that no longer exists in config.php.
+    $store = new ICC_OpenID_Client_Store();
+    $store->save('removed-user', array('subject' => 'user-abc-123', 'email' => 'old@example.com'));
+
+    $url = icc_run_callback(array());
 
     assert_same('https://sho.rt/admin/index.php', $url);
-    $user = ICC_OpenID_Client_Store::get('jdoe');
-    assert_same(1, (int) $user['linked'], 'marked as linked');
-    assert_false(ICC_OpenID_Client_Store::is_virtual_user('jdoe'), 'password login still allowed for linked account');
+    assert_same('admin', $GLOBALS['icc']['set_user'], 'resolved to the config.php user');
+    assert_same(null, ICC_OpenID_Client_Store::get('removed-user'), 'stale entry dropped');
+
+    $user = ICC_OpenID_Client_Store::get('admin');
+    assert_same('user-abc-123', $user['subject'], 'identity re-mapped');
 });
 
-test('Auth: logins can be refused', function () {
+test('Auth: email domain restriction refuses unwanted addresses', function () {
     icc_reset();
 
-    $url = icc_run_callback(array('create_if_does_not_exist' => 0));
-    assert_contains('icc_oidc_error=cannot-authorize', $url, 'provisioning disabled');
-
-    icc_reset();
+    $GLOBALS['yourls_user_passwords'] = array('admin' => 'phpass:$2y$existinghash');
 
     $url = icc_run_callback(array('email_domain_restriction' => 'example.com partner.org'));
     assert_same('https://sho.rt/admin/index.php', $url, 'allowed domain');
 
     icc_reset();
 
+    $GLOBALS['yourls_user_passwords'] = array('admin' => 'phpass:$2y$existinghash');
+
     $url = icc_run_callback(array('email_domain_restriction' => 'only.example.net'));
     assert_contains('icc_oidc_error=email-domain-not-allowed', $url, 'refused domain');
 
     icc_reset();
 
+    $GLOBALS['yourls_user_passwords'] = array('admin' => 'phpass:$2y$existinghash');
+
     $url = icc_run_callback(array('email_domain_restriction' => 'jdoe@example.com'));
     assert_same('https://sho.rt/admin/index.php', $url, 'full email entry allowed');
-});
-
-test('Auth: user names never collide with config.php users', function () {
-    icc_reset();
-
-    $GLOBALS['yourls_user_passwords'] = array('jdoe' => 'phpass:$2y$existinghash');
-
-    $url = icc_run_callback(array('link_existing_users' => 0, 'create_if_does_not_exist' => 1));
-
-    assert_same('https://sho.rt/admin/index.php', $url);
-    assert_same('jdoe-2', $GLOBALS['icc']['set_user'], 'collision resolved by suffixing');
-    assert_true(ICC_OpenID_Client_Store::get('jdoe-2') !== null, 'account created with the unique name');
 });
 
 test('Auth: tampered state fails the callback', function () {
@@ -1588,46 +1609,6 @@ test('Auth: logout link is rewritten only when single logout is configured', fun
     assert_same($link, $plain->handle_logout_link($link), 'YOURS logout untouched without an end session endpoint');
 });
 
-test('Auth: password login is blocked for SSO accounts only', function () {
-    icc_reset();
-
-    $store = new ICC_OpenID_Client_Store();
-    $store->save('jdoe', array('subject' => 'sub-1'));
-
-    $auth = new ICC_OpenID_Client_Auth(icc_settings(), new ICC_OpenID_Client_Logger(0));
-
-    $_REQUEST = array('username' => 'jdoe');
-    assert_throws('ICC_Test_Die', function () use ($auth) {
-        $auth->block_password_login();
-    });
-
-    $_REQUEST = array('username' => 'admin');
-    $auth->block_password_login();
-
-    $_REQUEST = array();
-    $auth->block_password_login();
-
-    assert_true(true, 'config.php users and empty submissions are ignored');
-});
-
-test('Auth: 2FA bypass mirrors the YOURLS cookie for the current request', function () {
-    icc_reset();
-    unset($_COOKIE[yourls_cookie_name()]);
-
-    icc_run_callback(array('two_factor_bypass' => 1));
-
-    assert_true(isset($_COOKIE[yourls_cookie_name()]), 'cookie mirrored');
-    assert_same(yourls_cookie_value('jdoe'), $_COOKIE[yourls_cookie_name()]);
-
-    icc_reset();
-    unset($_COOKIE[yourls_cookie_name()]);
-
-    icc_run_callback(array('two_factor_bypass' => 0));
-
-    assert_false(isset($_COOKIE[yourls_cookie_name()]), 'no mirror when the bypass is disabled');
-});
-
-
 // ---------------------------------------------------------------------------
 // Login screen
 // ---------------------------------------------------------------------------
@@ -1706,7 +1687,7 @@ test('Settings page: saves sanitized values and shows the redirect URI', functio
         'icc_oidc_endpoint_login'           => 'https://sso.example.com/realms/test/protocol/openid-connect/auth',
         'icc_oidc_endpoint_token'           => 'javascript:alert(1)',
         'icc_oidc_login_type'               => 'not-an-option',
-        'icc_oidc_create_if_does_not_exist' => '1',
+        'icc_oidc_redirect_user_back'       => '1',
         'icc_oidc_jwks_cache_ttl'           => '1200',
         'icc_oidc_login_button_text'        => "  Sign in with SSO  ",
         'icc_oidc_client_secret'            => ' top-secret ',
@@ -1725,16 +1706,20 @@ test('Settings page: saves sanitized values and shows the redirect URI', functio
     );
     assert_same('', yourls_get_option('icc_oidc_endpoint_token'), 'invalid URL rejected');
     assert_same('', yourls_get_option('icc_oidc_login_type'), 'invalid select value rejected');
-    assert_same(1, yourls_get_option('icc_oidc_create_if_does_not_exist'), 'checkbox stored');
+    assert_same(1, yourls_get_option('icc_oidc_redirect_user_back'), 'checked box stored as 1');
+    assert_same(0, yourls_get_option('icc_oidc_redirect_on_logout'), 'unchecked boxes stored as 0');
     assert_same(1200, yourls_get_option('icc_oidc_jwks_cache_ttl'), 'number stored');
     assert_same('Sign in with SSO', yourls_get_option('icc_oidc_login_button_text'), 'text trimmed');
     assert_same('top-secret', yourls_get_option('icc_oidc_client_secret'));
-    assert_same(0, yourls_get_option('icc_oidc_two_factor_bypass'), 'unchecked boxes stored as 0');
 
     assert_contains('Settings saved', $html);
     assert_contains('icc_oidc=callback', $html, 'redirect URI displayed');
     assert_contains('Quick Setup', $html);
-    assert_contains('SSO Users', $html);
+    assert_contains('SSO Logins', $html);
+    assert_contains('No account is ever created here.', $html, 'mapping explained to the administrator');
+    assert_not_contains('Create user if it does not exist', $html, 'account provisioning field removed');
+    assert_not_contains('Bypass local 2FA', $html, 'local 2FA bypass field removed');
+    assert_not_contains('Link Existing Users', $html, 'link existing users field removed');
     assert_contains('Ivan Carlos', $html);
 });
 
@@ -1767,7 +1752,7 @@ test('Settings page: discovery import previews values without saving them', func
     assert_same(false, yourls_get_option('icc_oidc_endpoint_login'), 'not stored until saved');
 });
 
-test('Settings page: log cleaning and user removal', function () {
+test('Settings page: log cleaning and forgetting an identity', function () {
     icc_reset();
 
     yourls_update_option('icc_oidc_enable_logging', 1);
@@ -1785,16 +1770,24 @@ test('Settings page: log cleaning and user removal', function () {
     assert_same(array(), $logger->get_logs(), 'logs cleared');
 
     $store = new ICC_OpenID_Client_Store();
-    $store->save('jdoe', array('subject' => 'sub-1'));
+    $store->save('admin', array('subject' => 'sub-1'));
 
-    $_POST = array('icc_oidc_action' => 'remove_user', 'icc_oidc_user' => 'jdoe');
+    $_POST = array();
+    ob_start();
+    $page->render();
+    $table = ob_get_clean();
+
+    assert_contains('<strong>admin</strong>', $table, 'the config.php user is listed');
+    assert_contains('value="Forget"', $table, 'the identity can be forgotten');
+
+    $_POST = array('icc_oidc_action' => 'remove_user', 'icc_oidc_user' => 'admin');
     ob_start();
     $page->render();
     $html = ob_get_clean();
 
-    assert_same(null, ICC_OpenID_Client_Store::get('jdoe'), 'user removed');
-    assert_contains('Removed', $html);
-    assert_contains('&quot;jdoe&quot;', $html);
+    assert_same(null, ICC_OpenID_Client_Store::get('admin'), 'identity forgotten');
+    assert_contains('Forgot', $html);
+    assert_contains('&quot;admin&quot;', $html);
 });
 
 // ---------------------------------------------------------------------------

@@ -33,7 +33,7 @@ if ($action === 'setup') {
         echo "tables created\n";
     }
 
-    yourls_update_option('active_plugins', array('icc-openid-client/plugin.php'));
+    yourls_update_option('active_plugins', array('icc-openid-connect-client/plugin.php'));
     yourls_update_option('icc_oidc_client_id', 'yourls-client');
     yourls_update_option('icc_oidc_client_secret', 'yourls-secret');
     yourls_update_option('icc_oidc_endpoint_login', 'http://127.0.0.1:8089/realms/mock/protocol/openid-connect/auth');
@@ -44,7 +44,6 @@ if ($action === 'setup') {
     yourls_update_option('icc_oidc_issuer', 'http://127.0.0.1:8089/realms/mock');
     yourls_update_option('icc_oidc_allow_internal_idp', 1);
     yourls_update_option('icc_oidc_login_type', 'auto');
-    yourls_update_option('icc_oidc_create_if_does_not_exist', 1);
     yourls_update_option('icc_oidc_enable_logging', 1);
     echo "plugin configured\n";
 

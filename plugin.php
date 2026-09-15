@@ -2,8 +2,8 @@
 /*
 Plugin Name: ICC OpenID Connect Client
 Plugin URI: https://github.com/ivancarlosti/yourlsiccopenidclient
-Description: Login to YOURLS with Single Sign-On using any OpenID Connect identity provider (Keycloak, Entra ID, Google, Auth0, ...) and Authorization Code Flow. Features SSO auto login, login button on the login form, email domain restriction, automatic account provisioning and local 2FA bypass.
-Version:           1.0.0
+Description: Login to YOURLS with Single Sign-On using any OpenID Connect identity provider (Keycloak, Entra ID, Google, Auth0, ...) and Authorization Code Flow. Features SSO auto login, login button on the login form, email domain restriction, single logout and a debug log.
+Version: 1.0.0
 Author: Ivan Carlos
 Author URI: https://ivancarlos.com.br/
 */
@@ -20,14 +20,6 @@ define('ICC_OIDC_PLUGIN_DIR', dirname(__FILE__));
 
 // Shared helpers, settings accessors and the plugin autoloader.
 require_once ICC_OIDC_PLUGIN_DIR . '/includes/functions-icc-openid-client.php';
-
-/*
- * SSO accounts are not defined in user/config.php but stored in a plugin
- * option, while YOURLS verifies its authentication cookie against the global
- * $yourls_user_passwords. Injecting them here, while the plugin file is being
- * included, guarantees they are known before any authentication happens.
- */
-ICC_OpenID_Client_Store::inject_virtual_users();
 
 yourls_add_action('plugins_loaded', 'icc_oidc_bootstrap');
 

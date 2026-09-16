@@ -19,6 +19,7 @@ Login to YOURLS with Single Sign-On using any OpenID Connect identity provider (
 * **ID token signature verification** with the provider JWKS (RS256, RS384, RS512, ES256, ES384, ES512) plus `iss`, `aud`, `azp`, `exp`, `iat`, `nbf`, `nonce` and `acr` validation
 * Login **button on the YOURLS login screen**, "button only" mode (no password form) or **automatic SSO** redirection
 * **Single logout**: the YOURLS logout link also ends the identity provider session (`id_token_hint`, `post_logout_redirect_uri`)
+* **Never stuck after a refusal**: when an identity is refused (email domain not allowed, identity not linked to a YOURLS user), the login screen explains why **and offers a link that ends the provider session**, so the visitor can sign in with another account
 * **No callback URL to configure**: the plugin uses a URL YOURLS itself serves, so it keeps working when a landing page, a static `index.php` or a parked domain owns the site root - with a built-in **Test callback URL** check
 * **Account handling**: signs in as the YOURLS user defined in `user/config.php` (the identity claim is matched against the login name, no account is ever created)
 * **Email domain restriction** (domains or full addresses) and configurable claim mapping (identity, nickname, display name, email)
@@ -116,10 +117,11 @@ define( 'OIDC_REDIRECT_URI', 'https://sho.rt/yourls-loader.php?icc_oidc=callback
 5. The identity is mapped to a YOURLS user from `user/config.php`: a known identity reuses its user, otherwise the identity claim is matched against the login name, and a single configured user is used when the claim does not match. No account is ever created, and an unlinked identity is refused when several users exist.
 6. YOURLS' own session cookie is stored, so the rest of YOURLS works unchanged.
 
-Plugins can hook into the flow: `icc_oidc_authentication_url_params`, `icc_oidc_login_button_text`, `icc_oidc_user_login_test`, `icc_oidc_redirect_after_login`, `icc_oidc_user_update`, `icc_oidc_update_user_using_current_claim`, `icc_oidc_before_login`, `icc_oidc_user_logged_in`, `icc_oidc_login_error`, `icc_oidc_logout`.
+Plugins can hook into the flow: `icc_oidc_authentication_url_params`, `icc_oidc_login_button_text`, `icc_oidc_logout_link_text`, `icc_oidc_error_needs_logout`, `icc_oidc_user_login_test`, `icc_oidc_redirect_after_login`, `icc_oidc_user_update`, `icc_oidc_update_user_using_current_claim`, `icc_oidc_before_login`, `icc_oidc_user_logged_in`, `icc_oidc_login_error`, `icc_oidc_logout`.
 
 ## Notes and limitations
 * YOURLS has no user directory and this plugin never creates accounts: Single Sign-On signs in as a user from `user/config.php`, and the identity used for each login is remembered in a plugin option (listed on the plugin page, where it can also be forgotten). Local password login keeps working, which is useful as a recovery path.
+* A refused identity is a dead end without a way out: because the visitor would keep coming back from the identity provider as the same account, the login screen shows the reason **and a "Log out of Single Sign-On and use another account" link** (for *email domain not allowed*, *unlinked identity*, *account not allowed* and inconsistent user data). The link ends the provider session, so the next attempt asks for credentials again. It is only shown when a logout endpoint is configured, its text can be changed with the `icc_oidc_logout_link_text` filter, and `icc_oidc_error_needs_logout` can decide when it appears.
 * YOURLS' privacy setting (`YOURLS_PRIVATE` in `config.php`) is what forces authentication; the plugin works with it and never disables it.
 * Refresh tokens are not used: YOURLS keeps its own session cookie, so the last ID token is stored only to be sent as `id_token_hint` on logout.
 * HTTPS is required in production, and the provider endpoints must be reachable over the public internet unless *Allow Internal IdP* is enabled.
@@ -135,19 +137,6 @@ Version 3.0 removes the *Redirect URI Override* setting and uses a YOURLS served
 3. Click **Test callback URL** to confirm YOURLS answers the new URL, then log in once.
 4. Any redirect URI value left behind by version 2.x is ignored; the plugin page reports it and the button **Remove the leftover redirect URI** deletes it.
 5. If your YOURLS admin area is protected by extra authentication, define `OIDC_REDIRECT_URI` (see above) and register that URL instead.
-
-## Development
-The unit/integration suite runs with plain PHP (no Composer, PHPUnit or database required) and includes the official RFC 7515 RS256/ES256 vectors, negative signature tests and simulated login flows:
-
-```bash
-php tests/run-tests.php
-```
-
-A real end to end test is also included: it downloads YOURLS into a temporary directory, starts MariaDB and a mock OpenID Connect provider (RS256) in Docker containers, and drives a full Single Sign-On login over HTTP (login button, automatic SSO redirect, code exchange, ID token verification, mapping to the `config.php` user, forged state rejection, single logout, settings page):
-
-```bash
-bash tests/e2e/run.sh      # requires docker, php CLI, curl
-```
 
 ## Requirements
 * YOURLS 1.8.2+ (tested with YOURLS 1.10.x)

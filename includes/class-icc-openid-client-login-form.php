@@ -95,17 +95,27 @@ class ICC_OpenID_Client_Login_Form
     }
 
     /**
+     * Error code coming back from the callback (sanitized), or an empty string.
+     *
+     * @return string
+     */
+    protected function error_code()
+    {
+        if (empty($_GET[ICC_OpenID_Client_Auth::ERROR_VAR])) {
+            return '';
+        }
+
+        return (string) preg_replace('/[^a-zA-Z0-9\-_]/', '', (string) $_GET[ICC_OpenID_Client_Auth::ERROR_VAR]);
+    }
+
+    /**
      * Message for an error code coming back from the callback.
      *
      * @return string
      */
     protected function error_message()
     {
-        if (empty($_GET[ICC_OpenID_Client_Auth::ERROR_VAR])) {
-            return '';
-        }
-
-        $code = preg_replace('/[^a-zA-Z0-9\-_]/', '', (string) $_GET[ICC_OpenID_Client_Auth::ERROR_VAR]);
+        $code = $this->error_code();
 
         if ($code === '') {
             return '';
@@ -115,16 +125,86 @@ class ICC_OpenID_Client_Login_Form
     }
 
     /**
+     * Errors that mean "this identity is refused here".
+     *
+     * Those are the ones where the visitor is stuck with the identity provider
+     * session: ending it is what allows a login with another account.
+     *
+     * @param string $code Error code.
+     *
+     * @return bool
+     */
+    protected function error_needs_provider_logout($code)
+    {
+        $codes = array(
+            'email-domain-not-allowed',
+            'email-domain-no-email',
+            'cannot-authorize',
+            'user-not-linked',
+            'incorrect-user-claim',
+        );
+
+        if (!in_array($code, $codes, true)) {
+            return false;
+        }
+
+        /**
+         * Filter whether the "log out and use another account" link is offered.
+         *
+         * @param bool   $needed Whether the link is shown.
+         * @param string $code   Error code.
+         */
+        return (bool) yourls_apply_filter('icc_oidc_error_needs_logout', true, $code)
+            && trim((string) $this->setting('endpoint_end_session')) !== '';
+    }
+
+    /**
+     * Link ending the identity provider session so another account can be used.
+     *
+     * No nonce: the login screen has no YOURLS session (and the logout endpoint
+     * only verifies a nonce when there is one to protect).
+     *
+     * @return string
+     */
+    protected function provider_logout_link_html()
+    {
+        if (!function_exists('icc_oidc_logout_url')) {
+            return '';
+        }
+
+        $text = 'Log out of Single Sign-On and use another account';
+
+        /**
+         * Filter the "log out and use another account" link text.
+         *
+         * @param string $text Link text.
+         */
+        $text = yourls_apply_filter('icc_oidc_logout_link_text', $text);
+
+        return '<a href="' . icc_oidc_esc_url(icc_oidc_logout_url()) . '">'
+            . icc_oidc_esc_html($text) . '</a>';
+    }
+
+    /**
      * Render the error notice (if any) and hide the password form in "button only" mode.
      *
      * @return void
      */
     public function render_form_top()
     {
+        $code = $this->error_code();
         $message = $this->error_message();
 
         if ($message !== '') {
-            echo '<p id="error-message" class="error">' . icc_oidc_esc_html($message) . '</p>' . "\n";
+            $logout = $this->error_needs_provider_logout($code) ? $this->provider_logout_link_html() : '';
+
+            echo '<p id="error-message" class="error">' . icc_oidc_esc_html($message);
+
+            if ($logout !== '') {
+                echo '<br />' . $logout;
+            }
+
+            echo '</p>' . "\n";
         }
 
         if ((string) $this->setting('login_type') !== 'button_only') {

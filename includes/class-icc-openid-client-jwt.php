@@ -549,7 +549,14 @@ class ICC_OpenID_Client_JWT
             $curves[$crv],
         ));
 
-        $point = "\x04" . $this->base64url_decode($jwk['x']) . $this->base64url_decode($jwk['y']);
+        $size = isset($spec['size']) ? intval($spec['size']) : 32;
+
+        // EC coordinates have to be exactly $size bytes (RFC 7518). Providers
+        // normally pad them with leading zeros, but a coordinate without them
+        // would build an invalid public key point, so pad defensively.
+        $point = "\x04"
+            . str_pad($this->base64url_decode($jwk['x']), $size, "\x00", STR_PAD_LEFT)
+            . str_pad($this->base64url_decode($jwk['y']), $size, "\x00", STR_PAD_LEFT);
 
         return self::pem(self::der_sequence(array($algorithm, self::der_bit_string($point))));
     }

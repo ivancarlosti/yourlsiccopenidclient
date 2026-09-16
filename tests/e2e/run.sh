@@ -116,7 +116,11 @@ BOOT=$(docker run --rm --network host -e YOURLS_APP_DIR=/app -v "${APP}:/app" -v
 check 'YOURLS tables created and plugin configured' "${BOOT}" 'plugin configured'
 
 # --- Web server --------------------------------------------------------------
-docker run -d --name icc-yo-web --network host -e YOURLS_APP_DIR=/app -v "${APP}:/app" -v "${SCRIPT_DIR}:/io" \
+# Several workers, because the plugin page can make a loopback request to itself
+# (the "Test callback URL" check) and the built-in server is single threaded by
+# default.
+docker run -d --name icc-yo-web --network host -e YOURLS_APP_DIR=/app -e PHP_CLI_SERVER_WORKERS=4 \
+    -v "${APP}:/app" -v "${SCRIPT_DIR}:/io" \
     -w /app icc-yourls-php php -S "127.0.0.1:${WEB_PORT}" /io/yourls-router.php >/dev/null
 
 for i in $(seq 1 30); do
@@ -136,6 +140,7 @@ LOGIN=$(curl -s -c "${WORK}/c1.txt" "http://127.0.0.1:${WEB_PORT}/admin/index.ph
 check 'login page renders the SSO button' "${LOGIN}" 'icc-oidc-login-button'
 check 'SSO button links to the provider' "${LOGIN}" 'response_type=code'
 check 'redirect URI points at the YOURLS callback' "${LOGIN}" 'icc_oidc%3Dcallback'
+check 'redirect URI is served by YOURLS (admin entry point)' "${LOGIN}" 'admin%2Findex.php%3Ficc_oidc%3Dcallback'
 
 # --- 2. Full authorization code flow -----------------------------------------
 cli option icc_oidc_login_type auto >/dev/null
@@ -174,25 +179,45 @@ SECOND=$(curl -s -L -c "${WORK}/c3.txt" -b "${WORK}/c3.txt" -o "${WORK}/admin2.h
 check 'second login reuses the linked account' "${SECOND}" '200'
 check 'still a single SSO login' "$(cli show | grep -c '"subject":"mock-user-1"')" '1'
 
-# --- 3b. Redirect URI override drives the callback and logout URLs ------------
-# Sites whose root is not served by YOURLS (a landing page owning "/", like
-# icc.gg) register a YOURLS entry point as redirect URI: the authorization
-# request and the logout link both have to use it.
-cli option icc_oidc_redirect_uri "http://127.0.0.1:${WEB_PORT}/admin/index.php?icc_oidc=callback" >/dev/null
+# --- 3b. A redirect URI left behind by version 2.x is ignored -----------------
+# The plugin always uses a URL YOURLS serves: a value stored by 2.x could point
+# at a page that YOURLS does not serve (a landing page owning the site root), so
+# it is reported and ignored instead of silently breaking the login.
+cli option icc_oidc_redirect_uri "http://127.0.0.1:${WEB_PORT}/legacy-callback?icc_oidc=callback" >/dev/null
 
 rm -f "${WORK}/c4.txt"
-OVERRIDE_FLOW=$(curl -s -L -c "${WORK}/c4.txt" -b "${WORK}/c4.txt" -o "${WORK}/admin-override.html" \
+LOGIN_LEFTOVER=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -c "${WORK}/c4.txt" \
+    "http://127.0.0.1:${WEB_PORT}/admin/index.php")
+check 'callback stays on the YOURLS entry point' "${LOGIN_LEFTOVER}" 'admin%2Findex.php%3Ficc_oidc%3Dcallback'
+check 'the leftover value is not used' \
+    "$(printf '%s' "${LOGIN_LEFTOVER}" | grep -c 'legacy-callback')" '^0$'
+
+LOGIN_FLOW=$(curl -s -L -c "${WORK}/c4.txt" -b "${WORK}/c4.txt" -o "${WORK}/admin-override.html" \
     -w '%{http_code} %{url_effective}' "http://127.0.0.1:${WEB_PORT}/admin/index.php")
-check 'login completes through the overridden redirect URI' "${OVERRIDE_FLOW}" \
+check 'login completes through the default callback URL' "${LOGIN_FLOW}" \
     "200 http://127.0.0.1:${WEB_PORT}/admin/index.php"
-check 'admin page logout link uses the overridden entry point' \
+check 'admin page logout link uses the YOURLS entry point' \
     "$(cat "${WORK}/admin-override.html")" \
     'admin/index.php?icc_oidc=logout'
-check 'settings page shows the derived logout URL' \
-    "$(curl -s -b "${WORK}/c4.txt" "http://127.0.0.1:${WEB_PORT}/admin/plugins.php?page=icc_openid_client")" \
-    'admin/index.php?icc_oidc=logout'
 
-cli option icc_oidc_redirect_uri '' >/dev/null
+SETTINGS_HTML=$(curl -s -b "${WORK}/c4.txt" "http://127.0.0.1:${WEB_PORT}/admin/plugins.php?page=icc_openid_client")
+check 'settings page shows the derived logout URL' "${SETTINGS_HTML}" 'admin/index.php?icc_oidc=logout'
+check 'settings page reports the ignored leftover' "${SETTINGS_HTML}" \
+    'left behind by version 2.x is not used any more'
+
+# --- 3c. The callback URL self check -----------------------------------------
+NONCE=$(printf '%s' "${SETTINGS_HTML}" | grep -o 'name="nonce" value="[^"]*"' | head -1 | sed 's/.*value="//; s/"$//')
+check 'settings page exposes a nonce for the callback test' "${NONCE}" '.'
+
+CHECK=$(curl -s -b "${WORK}/c4.txt" -d "nonce=${NONCE}&icc_oidc_action=test_callback" \
+    "http://127.0.0.1:${WEB_PORT}/admin/plugins.php?page=icc_openid_client")
+check 'callback URL self check confirms YOURLS answers' "${CHECK}" 'The callback URL works'
+
+REMOVED=$(curl -s -b "${WORK}/c4.txt" -d "nonce=${NONCE}&icc_oidc_action=clear_redirect_uri" \
+    "http://127.0.0.1:${WEB_PORT}/admin/plugins.php?page=icc_openid_client")
+check 'the leftover redirect URI can be removed' "${REMOVED}" 'left behind by version 2.x removed'
+check 'the leftover is gone from the page' \
+    "$(printf '%s' "${REMOVED}" | grep -c 'left behind by version 2.x is not used any more')" '^0$'
 
 # --- 4. Tampered state is rejected -------------------------------------------
 check 'forged state is rejected' \

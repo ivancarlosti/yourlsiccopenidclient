@@ -73,6 +73,24 @@ class ICC_Test_Response
     }
 }
 
+/**
+ * Stands for the WpOrg\Requests\Response\Headers object returned by YOURLS.
+ */
+class ICC_Test_Headers
+{
+    protected $data = array();
+
+    public function __construct(array $data = array())
+    {
+        $this->data = $data;
+    }
+
+    public function getAll()
+    {
+        return $this->data;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // YOURLS function stubs
 // ---------------------------------------------------------------------------
@@ -276,13 +294,14 @@ function icc_test_http_dispatch($method, $url, $headers, $data, $options)
 
     $response = call_user_func($GLOBALS['icc']['http'], $method, $url, $headers, $data, $options);
 
-    if (is_string($response)) {
+    if (is_string($response) || is_object($response)) {
         return $response;
     }
 
     return new ICC_Test_Response(
         isset($response['status']) ? $response['status'] : 200,
-        isset($response['body']) ? $response['body'] : ''
+        isset($response['body']) ? $response['body'] : '',
+        isset($response['headers']) ? $response['headers'] : array()
     );
 }
 
@@ -498,8 +517,11 @@ function icc_make_ec_key($kid = 'ec-test-key')
         'alg' => 'ES256',
         'use' => 'sig',
         'crv' => 'P-256',
-        'x'   => icc_b64url($details['ec']['x']),
-        'y'   => icc_b64url($details['ec']['y']),
+        // Coordinates must be exactly 32 bytes long (RFC 7518): OpenSSL strips
+        // leading zero bytes, which would build an invalid JWK about 1% of the
+        // time, so pad them.
+        'x'   => icc_b64url(str_pad($details['ec']['x'], 32, "\x00", STR_PAD_LEFT)),
+        'y'   => icc_b64url(str_pad($details['ec']['y'], 32, "\x00", STR_PAD_LEFT)),
     );
 
     return array('key' => $key, 'jwk' => $jwk, 'jwks' => array('keys' => array($jwk)));
@@ -749,6 +771,50 @@ test('JWT: generated ES256 token validates', function () {
     assert_same('jdoe', $validated['preferred_username']);
 });
 
+test('JWT: ES256 JWK with an unpadded coordinate still validates', function () {
+    // OpenSSL (and therefore the test helper) can export a P-256 coordinate
+    // without its leading zero bytes, which is not a canonical JWK: the plugin
+    // must pad it back to 32 bytes instead of building an invalid key point.
+    $key = null;
+    $jwk = null;
+
+    for ($i = 0; $i < 5000; $i++) {
+        $candidate = icc_make_ec_key();
+        $details = openssl_pkey_get_details($candidate['key']);
+
+        if (strlen($details['ec']['x']) !== 32 || strlen($details['ec']['y']) !== 32) {
+            $key = $candidate;
+            $jwk = array(
+                'kty' => 'EC',
+                'kid' => 'ec-test-key',
+                'alg' => 'ES256',
+                'use' => 'sig',
+                'crv' => 'P-256',
+                'x'   => icc_b64url(ltrim($details['ec']['x'], "\x00")),
+                'y'   => icc_b64url(ltrim($details['ec']['y'], "\x00")),
+            );
+
+            break;
+        }
+    }
+
+    assert_true($jwk !== null, 'a key with a short coordinate was generated');
+
+    $token = icc_sign_jwt(icc_valid_claims(), $key['key'], 'ES256');
+
+    $jwt = new ICC_OpenID_Client_JWT(
+        'https://sso.example.com/certs',
+        'client-123',
+        'https://sso.example.com/realms/test',
+        3600,
+        false
+    );
+
+    $validated = $jwt->validate_id_token($token, 'test-nonce', array('keys' => array($jwk)));
+
+    assert_same('jdoe', $validated['preferred_username']);
+});
+
 
 test('JWT: key id mismatch is rejected', function () {
     $key = icc_make_rsa_key('good-key');
@@ -989,7 +1055,7 @@ test('Client: authorization URL, state and nonce', function () {
     assert_contains('client_id=client-123', $url);
     assert_contains('scope=openid%20profile%20email', $url);
     assert_contains('nonce=', $url);
-    assert_contains('redirect_uri=' . rawurlencode('https://sho.rt/?icc_oidc=callback'), $url);
+    assert_contains('redirect_uri=' . rawurlencode('https://sho.rt/admin/index.php?icc_oidc=callback'), $url);
 
     // The state is stored server side (single use, with the redirect target).
     $states = yourls_get_option('icc_oidc_states');
@@ -1173,7 +1239,7 @@ test('Client: end session URL and issuer derivation', function () {
 
     assert_contains('id_token_hint=id-token-123', $url);
     assert_contains('client_id=client-123', $url);
-    assert_contains('post_logout_redirect_uri=' . rawurlencode('https://sho.rt/'), $url);
+    assert_contains('post_logout_redirect_uri=' . rawurlencode('https://sho.rt/admin/index.php'), $url);
 
     assert_same(
         'https://sso.example.com/realms/test',
@@ -1206,6 +1272,26 @@ test('HTTP: YOURLS helpers are wrapped into a normalized response', function () 
     assert_error_code('http-request-failed', function () {
         ICC_OpenID_Client_HTTP::request('GET', 'https://sso.example.com/certs');
     });
+});
+
+
+test('HTTP: response headers are normalized (Requests style objects)', function () {
+    icc_reset();
+
+    $GLOBALS['icc']['http'] = function () {
+        return new ICC_Test_Response(302, '', new ICC_Test_Headers(array(
+            'location' => 'https://sho.rt/admin/index.php?icc_oidc_error=state-not-found',
+        )));
+    };
+
+    $response = ICC_OpenID_Client_HTTP::request('GET', 'https://sho.rt/admin/index.php?icc_oidc=callback');
+
+    assert_same(302, $response['status']);
+    assert_same(
+        'https://sho.rt/admin/index.php?icc_oidc_error=state-not-found',
+        $response['headers']['location'],
+        'headers from a Requests style object are exposed'
+    );
 });
 
 
@@ -1300,64 +1386,154 @@ test('Settings: defaults, casting and options round trip', function () {
     yourls_update_option('icc_oidc_login_type', 'auto');
     assert_same('auto', icc_oidc_get('login_type'));
 
-    assert_same('https://sho.rt/?icc_oidc=callback', icc_oidc_redirect_uri(), 'default redirect URI');
-    assert_same('https://sho.rt/?icc_oidc=logout', icc_oidc_logout_url(), 'default logout URL');
-
-    yourls_update_option('icc_oidc_redirect_uri', 'https://sho.rt/custom-callback');
-    assert_same('https://sho.rt/custom-callback', icc_oidc_redirect_uri(), 'redirect URI override');
-
-    assert_same('https://sho.rt/custom-callback?icc_oidc=logout', icc_oidc_logout_url(), 'logout URL follows the override');
-    assert_true(icc_oidc_is_https('https://sho.rt/'), 'https detected');
-    assert_false(icc_oidc_is_https('http://sho.rt/'), 'http detected');
-});
-
-test('Endpoints: the logout URL follows the redirect URI override', function () {
-    icc_reset();
-
-    // A site whose root is not served by YOURLS uses a YOURLS entry point as
-    // redirect URI; logout has to stay on that same entry point.
-    yourls_update_option('icc_oidc_redirect_uri', 'https://sho.rt/admin/index.php?icc_oidc=callback');
-
     assert_same(
         'https://sho.rt/admin/index.php?icc_oidc=callback',
         icc_oidc_redirect_uri(),
-        'the redirect URI is returned verbatim'
+        'default redirect URI (served by YOURLS)'
     );
     assert_same(
         'https://sho.rt/admin/index.php?icc_oidc=logout',
         icc_oidc_logout_url(),
-        'logout derived from the override'
+        'default logout URL'
     );
 
-    // Extra parameters are preserved, only the action changes.
-    yourls_update_option('icc_oidc_redirect_uri', 'https://sho.rt/admin/index.php?icc_oidc=callback&lang=en');
+    // A value stored by version 2.x must not change anything: it may point at a
+    // URL that is not served by YOURLS, which would silently break the login.
+    yourls_update_option('icc_oidc_redirect_uri', 'https://sho.rt/legacy-callback');
+    assert_same('', icc_oidc_get('redirect_uri'), 'the stored value is not read any more');
+    assert_same(
+        'https://sho.rt/admin/index.php?icc_oidc=callback',
+        icc_oidc_redirect_uri(),
+        'the stored value is ignored'
+    );
+    assert_same(
+        'https://sho.rt/admin/index.php?icc_oidc=logout',
+        icc_oidc_logout_url(),
+        'logout stays on the default entry point'
+    );
+
+    assert_true(icc_oidc_is_https('https://sho.rt/'), 'https detected');
+    assert_false(icc_oidc_is_https('http://sho.rt/'), 'http detected');
+});
+
+test('Endpoints: the redirect URI resolver and the derived logout URL', function () {
+    icc_reset();
+
+    // Without a configured entry point both endpoints are YOURLS served.
+    assert_same(
+        'https://sho.rt/admin/index.php?icc_oidc=callback',
+        icc_oidc_endpoint_url('callback'),
+        'default callback URL'
+    );
+    assert_same(
+        'https://sho.rt/admin/index.php?icc_oidc=logout',
+        icc_oidc_endpoint_url('logout'),
+        'default logout URL'
+    );
+    assert_same(
+        'https://sho.rt/admin/index.php?icc_oidc=callback',
+        icc_oidc_default_redirect_uri(),
+        'the default callback URL is the YOURLS entry point'
+    );
+
+    // OIDC_REDIRECT_URI (the only remaining override) wins when it is on this site.
+    assert_same(
+        'https://sho.rt/tools.php?icc_oidc=callback',
+        icc_oidc_resolve_redirect_uri(
+            'https://sho.rt/tools.php?icc_oidc=callback',
+            'https://sho.rt/admin/index.php?icc_oidc=callback'
+        ),
+        'a configured entry point is used verbatim'
+    );
+    assert_same(
+        'https://sho.rt/admin/index.php?icc_oidc=callback',
+        icc_oidc_resolve_redirect_uri('', 'https://sho.rt/admin/index.php?icc_oidc=callback'),
+        'empty configuration falls back to the default'
+    );
+    assert_same(
+        'https://sho.rt/admin/index.php?icc_oidc=callback',
+        icc_oidc_resolve_redirect_uri('https://sso.example.com/?icc_oidc=callback', 'https://sho.rt/admin/index.php?icc_oidc=callback'),
+        'a foreign host is refused'
+    );
+
+    // The logout URL is derived from the effective redirect URI: only the action
+    // changes, other parameters survive.
     assert_same(
         'https://sho.rt/admin/index.php?icc_oidc=logout&lang=en',
-        icc_oidc_endpoint_url('logout'),
+        icc_oidc_add_query_args('https://sho.rt/admin/index.php?icc_oidc=callback&lang=en', array('icc_oidc' => 'logout')),
         'other query parameters are kept'
     );
-
-    // A non default port and a custom path survive too.
-    yourls_update_option('icc_oidc_redirect_uri', 'https://sho.rt:8443/yourls/callback?icc_oidc=callback');
     assert_same(
         'https://sho.rt:8443/yourls/callback?icc_oidc=logout',
-        icc_oidc_endpoint_url('logout'),
+        icc_oidc_add_query_args('https://sho.rt:8443/yourls/callback?icc_oidc=callback', array('icc_oidc' => 'logout')),
         'port and path are kept'
     );
-
-    // An override on another host must not be used to build the logout URL.
-    yourls_update_option('icc_oidc_redirect_uri', 'https://sso.example.com/?icc_oidc=callback');
-    assert_same('https://sho.rt/?icc_oidc=logout', icc_oidc_endpoint_url('logout'), 'foreign host ignored');
-    assert_same('https://sho.rt/?icc_oidc=callback', icc_oidc_endpoint_url('callback'), 'default callback URL');
     assert_same(
-        'https://sso.example.com/?icc_oidc=callback',
-        icc_oidc_redirect_uri(),
-        'the redirect URI is still used verbatim'
+        'https://sho.rt/tools.php?code=x&icc_oidc=callback',
+        icc_oidc_add_query_args('https://sho.rt/tools.php?code=x&icc_oidc=none', array('icc_oidc' => 'callback')),
+        'query arguments are replaced, not duplicated'
     );
+    assert_same('', icc_oidc_add_query_args('not-a-url', array('a' => 'b')), 'relative URLs are refused');
 
     assert_true(icc_oidc_is_local_url('https://sho.rt/admin/index.php'), 'local URL detected');
     assert_false(icc_oidc_is_local_url('https://sso.example.com/'), 'foreign URL detected');
     assert_false(icc_oidc_is_local_url(''), 'empty URL is not local');
+});
+
+test('Client: the callback URL self check reports who answered', function () {
+    icc_reset();
+
+    $settings = icc_settings();
+
+    // YOURLS answered with the plugin error redirect: the callback URL works.
+    $ok = new ICC_OpenID_Client_Client($settings, null, icc_http_transport(array(
+        'icc_oidc=callback' => array(
+            'status'  => 302,
+            'body'    => '',
+            'headers' => array('Location' => 'https://sho.rt/admin/index.php?icc_oidc_error=state-not-found'),
+        ),
+    )));
+
+    $result = $ok->probe_redirect_uri();
+    assert_same('ok', $result['status'], 'plugin redirect detected');
+    assert_same(302, $result['http_status']);
+    assert_contains('admin/index.php?icc_oidc=callback', $result['url']);
+
+    // Some other page answered: the provider response would never reach YOURLS.
+    $other = new ICC_OpenID_Client_Client($settings, null, icc_http_transport(array(
+        'icc_oidc=callback' => array('status' => 200, 'body' => '<html>landing page</html>'),
+    )));
+
+    $result = $other->probe_redirect_uri();
+    assert_same('other', $result['status'], 'foreign page detected');
+    assert_same(200, $result['http_status']);
+
+    // Unreachable/erroring callback URL.
+    $error = new ICC_OpenID_Client_Client($settings, null, icc_http_transport(array(
+        'icc_oidc=callback' => array('status' => 500, 'body' => 'boom'),
+    )));
+
+    $result = $error->probe_redirect_uri();
+    assert_same('error', $result['status'], 'http error reported');
+
+    // An override on another host is refused before any request is sent.
+    $foreign = new ICC_OpenID_Client_Client(
+        icc_settings(array('redirect_uri' => 'https://sso.example.com/?icc_oidc=callback')),
+        null,
+        icc_http_transport(array())
+    );
+
+    $result = $foreign->probe_redirect_uri();
+    assert_same('foreign', $result['status'], 'foreign callback URL refused');
+    assert_same(0, count($GLOBALS['icc']['http_log']), 'no request was sent');
+});
+
+test('Endpoints: post logout redirect URI is the YOURLS admin page', function () {
+    icc_reset();
+
+    $client = new ICC_OpenID_Client_Client(icc_settings());
+
+    assert_same('https://sho.rt/admin/index.php', $client->post_logout_redirect_uri());
 });
 
 
@@ -1765,6 +1941,11 @@ test('Settings page: saves sanitized values and shows the redirect URI', functio
 
     assert_contains('Settings saved', $html);
     assert_contains('icc_oidc=callback', $html, 'redirect URI displayed');
+    assert_contains('Test callback URL', $html, 'callback URL self check offered');
+    assert_not_contains('Redirect URI Override', $html, 'callback URL is no longer a field');
+    assert_contains('Default URL: it is served by YOURLS itself', $html, 'default explained');
+    assert_contains('Logout URL', $html);
+    assert_contains('Post logout redirect URI', $html);
     assert_contains('Quick Setup', $html);
     assert_contains('SSO Logins', $html);
     assert_contains('No account is ever created here.', $html, 'mapping explained to the administrator');
@@ -1772,6 +1953,73 @@ test('Settings page: saves sanitized values and shows the redirect URI', functio
     assert_not_contains('Bypass local 2FA', $html, 'local 2FA bypass field removed');
     assert_not_contains('Link Existing Users', $html, 'link existing users field removed');
     assert_contains('Ivan Carlos', $html);
+});
+
+
+test('Settings page: the callback URL self check reports the result', function () {
+    icc_reset();
+
+    $GLOBALS['icc']['http'] = icc_http_transport(array(
+        'icc_oidc=callback' => array(
+            'status'  => 302,
+            'body'    => '',
+            'headers' => array('location' => 'https://sho.rt/admin/index.php?icc_oidc_error=state-not-found'),
+        ),
+    ));
+
+    $_POST = array('icc_oidc_action' => 'test_callback');
+
+    $page = new ICC_OpenID_Client_Settings_Page(new ICC_OpenID_Client_Logger(0));
+
+    ob_start();
+    $page->render();
+    $html = ob_get_clean();
+
+    assert_contains('The callback URL works', $html);
+    assert_contains('admin/index.php?icc_oidc=callback', $html);
+
+    // A landing page answering the callback URL is reported as a failure.
+    $GLOBALS['icc']['http'] = icc_http_transport(array(
+        'icc_oidc=callback' => array('status' => 200, 'body' => '<html>landing page</html>'),
+    ));
+
+    ob_start();
+    $page->render();
+    $html = ob_get_clean();
+
+    assert_contains('is not answered by YOURLS', $html);
+    assert_contains('another page answered with HTTP 200', $html);
+
+    // A value left behind by version 2.x is reported, ignored and removable.
+    yourls_update_option('icc_oidc_redirect_uri', 'https://sho.rt/legacy-callback');
+    $_POST = array();
+
+    ob_start();
+    $page->render();
+    $html = ob_get_clean();
+
+    assert_contains('Ignored:', $html, 'the leftover value is reported');
+    assert_contains('https://sho.rt/legacy-callback', $html, 'the leftover value is shown');
+    assert_contains('Remove the leftover redirect URI', $html);
+    assert_same(
+        'https://sho.rt/admin/index.php?icc_oidc=callback',
+        icc_oidc_redirect_uri(),
+        'the leftover value does not change the callback URL'
+    );
+
+    $_POST = array('icc_oidc_action' => 'clear_redirect_uri');
+
+    ob_start();
+    $page->render();
+    $html = ob_get_clean();
+
+    assert_contains('left behind by version 2.x removed', $html);
+    assert_same(false, yourls_get_option('icc_oidc_redirect_uri'), 'leftover option deleted');
+    assert_same(
+        'https://sho.rt/admin/index.php?icc_oidc=callback',
+        icc_oidc_redirect_uri(),
+        'the default callback URL is used'
+    );
 });
 
 

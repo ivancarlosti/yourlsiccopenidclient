@@ -122,7 +122,6 @@ class ICC_OpenID_Client_Settings_Page
                 'title'  => 'Authorization Settings',
                 'fields' => array(
                     'state_time_limit'   => array('label' => 'State Time Limit (seconds)', 'type' => 'number', 'hint' => 'Lifetime of a login attempt. Default: 180.'),
-                    'redirect_uri'       => array('label' => 'Redirect URI Override', 'type' => 'text', 'hint' => 'Optional custom callback URL (must be registered at the identity provider).'),
                     'redirect_user_back' => array('label' => 'Redirect Back to Origin Page', 'type' => 'checkbox', 'hint' => 'Return the user to the page they started from.'),
                     'redirect_on_logout' => array('label' => 'Redirect to IdP on logout', 'type' => 'checkbox', 'hint' => 'End the identity provider session when logging out.'),
                 ),
@@ -174,9 +173,71 @@ class ICC_OpenID_Client_Settings_Page
             return;
         }
 
+        if ($action === 'test_callback') {
+            $this->test_callback_url();
+
+            return;
+        }
+
+        if ($action === 'clear_redirect_uri') {
+            yourls_delete_option(icc_oidc_option_name('redirect_uri'));
+            $this->notices[] = array(
+                'success',
+                'Redirect URI left behind by version 2.x removed: the plugin uses the default callback URL ('
+                    . icc_oidc_default_redirect_uri() . ').',
+            );
+
+            return;
+        }
+
         if ($action === 'remove_user') {
             $this->remove_user();
         }
+    }
+
+    /**
+     * Protocol client, built from the current settings.
+     *
+     * @return ICC_OpenID_Client_Client
+     */
+    protected function client()
+    {
+        return new ICC_OpenID_Client_Client(icc_oidc_get_all(), $this->logger);
+    }
+
+    /**
+     * Send a forged callback to the redirect URI and report what answered it.
+     *
+     * @return void
+     */
+    protected function test_callback_url()
+    {
+        try {
+            $result = $this->client()->probe_redirect_uri();
+        } catch (ICC_OpenID_Client_Error $error) {
+            $this->notices[] = array(
+                'error',
+                'The callback URL could not be checked: ' . $error->getMessage(),
+            );
+
+            return;
+        }
+
+        if ($result['status'] === 'ok') {
+            $this->notices[] = array(
+                'success',
+                'The callback URL works: ' . $result['message'] . ' (' . $result['url'] . ').',
+            );
+
+            return;
+        }
+
+        $this->notices[] = array(
+            'error',
+            'The callback URL ' . $result['url'] . ' is not answered by YOURLS: ' . $result['message']
+                . '. It has to be a URL served by YOURLS itself, for example '
+                . icc_oidc_default_redirect_uri() . ' — set OIDC_REDIRECT_URI in user/config.php accordingly.',
+        );
     }
 
     /**
@@ -571,23 +632,60 @@ class ICC_OpenID_Client_Settings_Page
         echo '<hr style="margin-top: 40px" />' . "\n";
         echo '<h3>Notes</h3>' . "\n";
 
+        $leftover = yourls_get_option(icc_oidc_option_name('redirect_uri'));
+
+        if (icc_oidc_is_constant('redirect_uri')) {
+            $source = 'Forced by the <code>OIDC_REDIRECT_URI</code> constant in <code>user/config.php</code>';
+        } else {
+            $source = 'Default URL: it is served by YOURLS itself, so nothing has to be configured here';
+        }
+
         echo '<p><strong>Redirect URI</strong><br />'
             . '<code>' . icc_oidc_esc_html($redirect_uri) . '</code><br />'
-            . '<small>Register this exact URL as a valid redirect URI for the client at your identity provider.</small></p>' . "\n";
+            . '<small>Register this exact URL as a valid redirect URI for the client at your identity provider. '
+            . $source . '.</small></p>' . "\n";
+
+        if (is_string($leftover) && trim($leftover) !== '') {
+            echo '<p style="color:#a33;"><strong>Ignored:</strong> a redirect URI left behind by version 2.x is not used any more (<code>'
+                . icc_oidc_esc_html(trim($leftover)) . '</code>): the URL above is, because it is guaranteed to be served by YOURLS.</p>' . "\n";
+        }
 
         echo '<p><strong>Logout URL</strong><br />'
             . '<code>' . icc_oidc_esc_html(icc_oidc_logout_url()) . '</code><br />'
             . '<small>Clears the YOURLS session (and the provider session when single logout is enabled). '
-            . 'It follows the Redirect URI Override, so both endpoints stay on the same entry point.</small></p>' . "\n";
+            . 'It always lives on the same entry point as the redirect URI.</small></p>' . "\n";
+
+        echo '<p><strong>Post logout redirect URI</strong><br />'
+            . '<code>' . icc_oidc_esc_html($this->client()->post_logout_redirect_uri()) . '</code><br />'
+            . '<small>Optional: where the identity provider sends the user back after ending the session.</small></p>' . "\n";
 
         if (!icc_oidc_is_local_url($redirect_uri)) {
             echo '<p style="color:#a33;"><strong>Warning:</strong> the redirect URI above does not point at this YOURLS installation ('
-                . icc_oidc_esc_html(icc_oidc_site_url()) . '): the identity provider response would never reach the plugin. '
-                . 'Set the Redirect URI Override to a URL served by YOURLS.</p>' . "\n";
-        } else {
-            echo '<p><small>The redirect URI must be answered by YOURLS itself. If another application or a static '
-                . '<code>index.php</code> owns the site root, set the Redirect URI Override to a YOURLS URL '
-                . '(for example <code>[your YOURLS admin URL]?icc_oidc=callback</code>) and register it at the identity provider.</small></p>' . "\n";
+                . icc_oidc_esc_html(icc_oidc_site_url()) . '): the identity provider response would never reach the plugin.</p>' . "\n";
+        }
+
+        echo '<form method="post" action="" style="margin-top:10px;">' . "\n";
+
+        if (function_exists('yourls_nonce_field')) {
+            yourls_nonce_field(self::NONCE_ACTION);
+        }
+
+        echo '<input type="hidden" name="icc_oidc_action" value="test_callback" />' . "\n";
+        echo '<p><input type="submit" class="button" value="Test callback URL" />'
+            . ' <small>Send a forged callback to the redirect URI above and report what answered it.</small></p>' . "\n";
+        echo '</form>' . "\n";
+
+        if (is_string($leftover) && trim($leftover) !== '') {
+            echo '<form method="post" action="">' . "\n";
+
+            if (function_exists('yourls_nonce_field')) {
+                yourls_nonce_field(self::NONCE_ACTION);
+            }
+
+            echo '<input type="hidden" name="icc_oidc_action" value="clear_redirect_uri" />' . "\n";
+            echo '<p><input type="submit" class="button" value="Remove the leftover redirect URI" />'
+                . ' <small>Delete the unused value left by version 2.x.</small></p>' . "\n";
+            echo '</form>' . "\n";
         }
 
         echo '<p><strong>Issuer examples</strong><br />'

@@ -176,6 +176,16 @@ function icc_oidc_get($key)
         return constant($map[$key]);
     }
 
+    // The redirect URI is not a stored setting: this plugin always uses a URL
+    // served by YOURLS itself, or the OIDC_REDIRECT_URI constant. A value left
+    // behind by version 2.x is deliberately ignored, because it may point at a
+    // URL that is not served by YOURLS (for example the site root of a landing
+    // page), which silently breaks the login. The leftover is reported on the
+    // plugin page, where it can also be removed.
+    if ($key === 'redirect_uri') {
+        return '';
+    }
+
     $defaults = icc_oidc_defaults();
     $default = isset($defaults[$key]) ? $defaults[$key] : '';
 
@@ -328,19 +338,84 @@ function icc_oidc_is_local_url($url)
 }
 
 /**
- * Default OAuth redirect URI (the URL the identity provider sends the user back to).
+ * Default OpenID Connect callback URL.
+ *
+ * The provider response has to be answered by YOURLS itself. The plugin serves
+ * the callback during "plugins_loaded", before YOURLS runs its own
+ * authentication, so the YOURLS login page is a safe callback target even when
+ * another application (a landing page, a static index.php, a parked domain)
+ * owns the site root. This is why no configuration is needed.
  *
  * @return string
  */
 function icc_oidc_default_redirect_uri()
 {
-    $base = rtrim(icc_oidc_site_url(), '/');
+    if (function_exists('yourls_admin_url')) {
+        return yourls_admin_url('index.php') . '?icc_oidc=callback';
+    }
 
-    return $base . '/?icc_oidc=callback';
+    return rtrim(icc_oidc_site_url(), '/') . '/admin/index.php?icc_oidc=callback';
 }
 
 /**
- * Effective redirect URI (setting override, else the default callback URL).
+ * Set or replace query parameters of an absolute URL.
+ *
+ * @param string $url  Absolute URL.
+ * @param array  $args Parameters to set.
+ *
+ * @return string The URL with the parameters set, or an empty string when the
+ *                URL is not an absolute HTTP(S) URL.
+ */
+function icc_oidc_add_query_args($url, array $args)
+{
+    $parts = parse_url((string) $url);
+
+    if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
+        return '';
+    }
+
+    $query = array();
+
+    if (isset($parts['query'])) {
+        parse_str($parts['query'], $query);
+    }
+
+    foreach ($args as $key => $value) {
+        $query[$key] = $value;
+    }
+
+    $result = $parts['scheme'] . '://' . $parts['host'];
+
+    if (!empty($parts['port'])) {
+        $result .= ':' . intval($parts['port']);
+    }
+
+    $result .= isset($parts['path']) && $parts['path'] !== '' ? $parts['path'] : '/';
+
+    return $result . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+}
+
+/**
+ * Effective redirect URI: a configured entry point wins, else the default.
+ *
+ * @param string $configured Configured callback URL (OIDC_REDIRECT_URI constant, or empty).
+ * @param string $default    Default callback URL (a URL YOURLS serves).
+ *
+ * @return string
+ */
+function icc_oidc_resolve_redirect_uri($configured, $default)
+{
+    $configured = trim((string) $configured);
+
+    if ($configured === '' || !icc_oidc_is_local_url($configured)) {
+        return (string) $default;
+    }
+
+    return $configured;
+}
+
+/**
+ * Effective redirect URI (OIDC_REDIRECT_URI when configured, else the default).
  *
  * The value is returned verbatim: it has to match, byte for byte, the redirect
  * URI registered at the identity provider.
@@ -349,21 +424,15 @@ function icc_oidc_default_redirect_uri()
  */
 function icc_oidc_redirect_uri()
 {
-    $configured = trim((string) icc_oidc_get('redirect_uri'));
-
-    if ($configured !== '') {
-        return $configured;
-    }
-
-    return icc_oidc_default_redirect_uri();
+    return icc_oidc_resolve_redirect_uri(icc_oidc_get('redirect_uri'), icc_oidc_default_redirect_uri());
 }
 
 /**
  * URL of a plugin endpoint ("callback", "logout").
  *
- * The redirect URI is a single point of truth: when a custom one is configured
- * (for example because the site root is not served by YOURLS), the logout URL is
- * derived from it so both endpoints stay on the same, reachable entry point.
+ * The effective redirect URI is the single point of truth: both endpoints always
+ * live on the same entry point, so a URL YOURLS serves answers the callback and
+ * the logout link alike.
  *
  * @param string $action Endpoint action ("callback" or "logout").
  *
@@ -375,38 +444,16 @@ function icc_oidc_endpoint_url($action)
 
     // Keep in sync with ICC_OpenID_Client_Auth::QUERY_VAR.
     $marker = 'icc_oidc';
-    $default = rtrim(icc_oidc_site_url(), '/') . '/?' . $marker . '=' . $action;
 
-    $base = trim((string) icc_oidc_get('redirect_uri'));
+    $url = icc_oidc_add_query_args(icc_oidc_redirect_uri(), array($marker => $action));
 
-    if ($base === '' || !icc_oidc_is_local_url($base)) {
-        return $default;
+    if ($url === '') {
+        // Only reachable when neither the configured value nor the default is an
+        // absolute URL, which cannot happen through the configuration.
+        $url = rtrim(icc_oidc_site_url(), '/') . '/?' . $marker . '=' . $action;
     }
 
-    $parts = parse_url($base);
-
-    if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
-        return $default;
-    }
-
-    // Keep every other parameter and only swap the action.
-    $query = array();
-
-    if (isset($parts['query'])) {
-        parse_str($parts['query'], $query);
-    }
-
-    $query[$marker] = $action;
-
-    $url = $parts['scheme'] . '://' . $parts['host'];
-
-    if (!empty($parts['port'])) {
-        $url .= ':' . intval($parts['port']);
-    }
-
-    $url .= isset($parts['path']) && $parts['path'] !== '' ? $parts['path'] : '/';
-
-    return $url . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+    return $url;
 }
 
 /**

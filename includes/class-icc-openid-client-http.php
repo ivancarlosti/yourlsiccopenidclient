@@ -56,8 +56,31 @@ class ICC_OpenID_Client_HTTP
         return array(
             'status'  => intval($response->status_code),
             'body'    => isset($response->body) ? (string) $response->body : '',
-            'headers' => isset($response->headers) && is_object($response->headers) ? (array) $response->headers : array(),
+            'headers' => self::normalize_headers(isset($response->headers) ? $response->headers : array()),
         );
+    }
+
+    /**
+     * Normalize response headers into a plain array.
+     *
+     * YOURLS (Requests) returns a WpOrg\Requests\Response\Headers object, whose
+     * data is not exposed by a plain object cast, so getAll() is preferred.
+     *
+     * @param mixed $headers Headers object or array.
+     *
+     * @return array
+     */
+    protected static function normalize_headers($headers)
+    {
+        if (is_object($headers) && method_exists($headers, 'getAll')) {
+            return (array) $headers->getAll();
+        }
+
+        if (is_object($headers) || is_array($headers)) {
+            return (array) $headers;
+        }
+
+        return array();
     }
 
     /**

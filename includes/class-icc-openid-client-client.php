@@ -615,12 +615,118 @@ class ICC_OpenID_Client_Client
     /**
      * Where the identity provider sends the user after ending the session.
      *
+     * The YOURLS admin panel: a single logout should not drop the user on a
+     * landing page that happens to own the site root. Register this URL as a
+     * post logout redirect URI at the identity provider.
+     *
      * @return string
      */
     public function post_logout_redirect_uri()
     {
+        if (function_exists('yourls_admin_url')) {
+            return yourls_admin_url('index.php');
+        }
+
         if (function_exists('icc_oidc_site_url')) {
-            return rtrim(icc_oidc_site_url(), '/') . '/';
+            return rtrim(icc_oidc_site_url(), '/') . '/admin/index.php';
+        }
+
+        return '';
+    }
+
+    /**
+     * Check whether the callback URL is really answered by YOURLS.
+     *
+     * Sends one forged callback to the redirect URI (a state that does not exist,
+     * so nothing is logged in and nothing is stored) and reports what answered.
+     * When a landing page or another application answers it, the provider
+     * response would never reach the plugin.
+     *
+     * @return array array('status' => 'ok'|'other'|'error'|'foreign', 'message' => string, 'url' => string, 'http_status' => int)
+     *
+     * @throws ICC_OpenID_Client_Error When the request cannot be sent at all.
+     */
+    public function probe_redirect_uri()
+    {
+        $url = $this->get_redirect_uri();
+        $result = array('status' => 'foreign', 'message' => '', 'url' => $url, 'http_status' => 0);
+
+        if ($url === '' || !function_exists('icc_oidc_is_local_url') || !icc_oidc_is_local_url($url)) {
+            $result['message'] = 'the callback URL does not point at this YOURLS installation';
+
+            return $result;
+        }
+
+        $probe = icc_oidc_add_query_args($url, array(
+            'icc_oidc' => 'callback',
+            'code'     => 'callback-probe',
+            'state'    => 'callback-probe',
+        ));
+
+        if ($probe === '') {
+            $result['message'] = 'the callback URL is not an absolute URL';
+
+            return $result;
+        }
+
+        // The URL is on this installation, so the (usually blocked) self request
+        // is allowed here.
+        ICC_OpenID_Client_HTTP::guard_url($probe, true);
+
+        $options = ICC_OpenID_Client_HTTP::default_options(
+            $this->setting('http_request_timeout', 5),
+            $this->ssl_verify()
+        );
+        $options['follow_redirects'] = false;
+        $options['redirects'] = 0;
+
+        if (is_callable($this->http)) {
+            $response = call_user_func($this->http, 'GET', $probe, array('Accept' => 'text/html'), array(), $options);
+        } else {
+            $response = ICC_OpenID_Client_HTTP::request('GET', $probe, array('Accept' => 'text/html'), array(), $options);
+        }
+
+        $status = isset($response['status']) ? intval($response['status']) : 0;
+        $location = $this->header_value(isset($response['headers']) ? $response['headers'] : array(), 'location');
+
+        $this->log('Callback URL check: HTTP ' . $status . ' ' . $location, 'callback-check');
+
+        $result['http_status'] = $status;
+
+        if ($location !== '' && strpos($location, 'icc_oidc_error=') !== false) {
+            $result['status'] = 'ok';
+            $result['message'] = 'YOURLS answered the callback request (HTTP ' . $status . ')';
+
+            return $result;
+        }
+
+        if ($status === 200) {
+            $result['status'] = 'other';
+            $result['message'] = 'another page answered with HTTP 200 instead of the plugin';
+
+            return $result;
+        }
+
+        $result['status'] = 'error';
+        $result['message'] = 'the request failed with HTTP ' . $status;
+
+        return $result;
+    }
+
+    /**
+     * Read a response header, case insensitively.
+     *
+     * @param array  $headers Response headers.
+     * @param string $name    Header name.
+     *
+     * @return string
+     */
+    protected function header_value($headers, $name)
+    {
+        foreach ((array) $headers as $key => $value) {
+            if (strtolower((string) $key) === strtolower((string) $name)) {
+                return is_array($value) ? implode(', ', $value) : (string) $value;
+            }
         }
 
         return '';

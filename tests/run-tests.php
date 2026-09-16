@@ -213,9 +213,21 @@ function yourls_esc_url($url)
     return htmlspecialchars((string) $url, ENT_QUOTES, 'UTF-8');
 }
 
+/**
+ * Mirrors YOURLS: the nonce belongs to an action *and* a user, so a nonce created
+ * while authenticated cannot be verified with another user (or before YOURLS'
+ * authentication defined YOURLS_USER, which defaults to '-1').
+ */
 function yourls_create_nonce($action, $user = false)
 {
-    return 'nonce-' . md5($action . '|' . (string) $user);
+    if (false === $user) {
+        $user = defined('YOURLS_USER') ? YOURLS_USER : '-1';
+    }
+
+    // Stands for YOURLS' half nonce life window.
+    $window = ceil(time() / 900);
+
+    return substr(yourls_salt($action . $user . $window), 0, 10);
 }
 
 function yourls_nonce_field($action, $name = 'nonce', $user = false, $echo = true)
@@ -263,7 +275,24 @@ function yourls_add_query_arg($param, $value = false, $url = false)
 
 function yourls_verify_nonce($action, $nonce = false, $user = false, $return = '')
 {
-    return true;
+    // PHP fills $_REQUEST from GET and POST; the tests set $_POST (forms) or
+    // $_GET (links) directly, so look in both.
+    if (false === $nonce) {
+        if (isset($_REQUEST['nonce'])) {
+            $nonce = $_REQUEST['nonce'];
+        } elseif (isset($_POST['nonce'])) {
+            $nonce = $_POST['nonce'];
+        } elseif (isset($_GET['nonce'])) {
+            $nonce = $_GET['nonce'];
+        }
+    }
+
+    if (hash_equals(yourls_create_nonce($action, $user), (string) $nonce)) {
+        return true;
+    }
+
+    // Mirrors yourls_die( 'Unauthorized action or expired link', 'Error', 403 ).
+    throw new ICC_Test_Die('Unauthorized action or expired link', 'Error');
 }
 
 function yourls_http_get($url, $headers = array(), $data = array(), $options = array())
@@ -1740,6 +1769,21 @@ test('Auth: auto SSO redirects only when needed', function () {
     $auth->handle_require_auth();
     unset($_COOKIE[yourls_cookie_name()]);
 
+    // After a logout YOURLS leaves an empty cookie behind: it must not be taken
+    // for a session, otherwise automatic SSO would stop working.
+    $redirect = null;
+    $_COOKIE[yourls_cookie_name()] = '';
+
+    try {
+        $auth->handle_require_auth();
+    } catch (ICC_Test_Redirect $exception) {
+        $redirect = $exception->url;
+    }
+
+    unset($_COOKIE[yourls_cookie_name()]);
+
+    assert_contains('response_type=code', (string) $redirect, 'empty cookie is not a session');
+
     // Coming back from an error: show the login form instead of looping.
     $_GET['icc_oidc_error'] = 'invalid-signature';
     $auth->handle_require_auth();
@@ -1836,6 +1880,80 @@ test('Auth: logout link is rewritten only when single logout is configured', fun
     assert_same($link, $plain->handle_logout_link($link), 'YOURS logout untouched without an end session endpoint');
 });
 
+test('Auth: logout with the nonce of the session user works', function () {
+    icc_reset();
+
+    $GLOBALS['yourls_user_passwords'] = array('jdoe' => 'phpass:x');
+    $_COOKIE[yourls_cookie_name()] = yourls_cookie_value('jdoe');
+
+    // The link is rendered while authenticated, so its nonce belongs to "jdoe",
+    // while the request itself is handled before YOURLS authentication (there is
+    // no YOURLS_USER yet): verifying it as "-1" used to make the logout fail with
+    // "Unauthorized action or expired link".
+    $_GET = array(
+        'icc_oidc' => 'logout',
+        'nonce'    => yourls_create_nonce('icc_oidc_logout', 'jdoe'),
+    );
+
+    $auth = new ICC_OpenID_Client_Auth(icc_settings(), new ICC_OpenID_Client_Logger(0));
+
+    $url = null;
+
+    try {
+        $auth->handle_request();
+    } catch (ICC_Test_Redirect $redirect) {
+        $url = $redirect->url;
+    } catch (ICC_Test_Die $die) {
+        throw new ICC_Test_Assertion('logout refused: ' . $die->getMessage());
+    }
+
+    assert_contains('protocol/openid-connect/logout', (string) $url);
+    assert_same('', $GLOBALS['icc']['cookie'], 'YOURLS cookie cleared');
+});
+
+test('Auth: a logout nonce created for another user is refused', function () {
+    icc_reset();
+
+    $GLOBALS['yourls_user_passwords'] = array('jdoe' => 'phpass:x');
+    $_COOKIE[yourls_cookie_name()] = yourls_cookie_value('jdoe');
+
+    $_GET = array(
+        'icc_oidc' => 'logout',
+        'nonce'    => yourls_create_nonce('icc_oidc_logout', 'someone-else'),
+    );
+
+    $auth = new ICC_OpenID_Client_Auth(icc_settings(), new ICC_OpenID_Client_Logger(0));
+
+    assert_throws('ICC_Test_Die', function () use ($auth) {
+        $auth->handle_request();
+    }, 'a forged logout request is refused');
+
+    assert_same(null, $GLOBALS['icc']['cookie'], 'the session cookie is left alone');
+});
+
+test('Auth: logout without a session ignores a leftover nonce', function () {
+    icc_reset();
+
+    // No YOURLS cookie: there is no session to protect, so an old or bogus nonce
+    // must not stop the request (it only clears an empty cookie).
+    $_GET = array('icc_oidc' => 'logout', 'nonce' => 'stale-nonce');
+
+    $auth = new ICC_OpenID_Client_Auth(icc_settings(), new ICC_OpenID_Client_Logger(0));
+
+    $url = null;
+
+    try {
+        $auth->handle_request();
+    } catch (ICC_Test_Redirect $redirect) {
+        $url = $redirect->url;
+    } catch (ICC_Test_Die $die) {
+        throw new ICC_Test_Assertion('logout refused: ' . $die->getMessage());
+    }
+
+    assert_contains('protocol/openid-connect/logout', (string) $url);
+    assert_same('', $GLOBALS['icc']['cookie'], 'YOURLS cookie cleared');
+});
+
 // ---------------------------------------------------------------------------
 // Login screen
 // ---------------------------------------------------------------------------
@@ -1909,7 +2027,8 @@ test('Settings page: saves sanitized values and shows the redirect URI', functio
     icc_reset();
 
     $_POST = array(
-        'icc_oidc_action'                   => 'save',
+        'nonce'            => yourls_create_nonce('icc_oidc_settings'),
+        'icc_oidc_action'  => 'save',
         'icc_oidc_client_id'                => 'client-123',
         'icc_oidc_endpoint_login'           => 'https://sso.example.com/realms/test/protocol/openid-connect/auth',
         'icc_oidc_endpoint_token'           => 'javascript:alert(1)',
@@ -1967,7 +2086,10 @@ test('Settings page: the callback URL self check reports the result', function (
         ),
     ));
 
-    $_POST = array('icc_oidc_action' => 'test_callback');
+    $_POST = array(
+        'nonce'           => yourls_create_nonce('icc_oidc_settings'),
+        'icc_oidc_action' => 'test_callback',
+    );
 
     $page = new ICC_OpenID_Client_Settings_Page(new ICC_OpenID_Client_Logger(0));
 
@@ -2007,7 +2129,10 @@ test('Settings page: the callback URL self check reports the result', function (
         'the leftover value does not change the callback URL'
     );
 
-    $_POST = array('icc_oidc_action' => 'clear_redirect_uri');
+    $_POST = array(
+        'nonce'           => yourls_create_nonce('icc_oidc_settings'),
+        'icc_oidc_action' => 'clear_redirect_uri',
+    );
 
     ob_start();
     $page->render();
@@ -2036,6 +2161,7 @@ test('Settings page: discovery import previews values without saving them', func
     ));
 
     $_POST = array(
+        'nonce'                  => yourls_create_nonce('icc_oidc_settings'),
         'icc_oidc_action'        => 'discover',
         'icc_oidc_discovery_url' => 'https://sso.example.com/realms/test/.well-known/openid-configuration',
     );
@@ -2060,7 +2186,10 @@ test('Settings page: log cleaning and forgetting an identity', function () {
 
     assert_same(1, count($logger->get_logs()));
 
-    $_POST = array('icc_oidc_action' => 'clear_logs');
+    $_POST = array(
+        'nonce'           => yourls_create_nonce('icc_oidc_settings'),
+        'icc_oidc_action' => 'clear_logs',
+    );
     $page = new ICC_OpenID_Client_Settings_Page($logger);
     ob_start();
     $page->render();
@@ -2079,7 +2208,11 @@ test('Settings page: log cleaning and forgetting an identity', function () {
     assert_contains('<strong>admin</strong>', $table, 'the config.php user is listed');
     assert_contains('value="Forget"', $table, 'the identity can be forgotten');
 
-    $_POST = array('icc_oidc_action' => 'remove_user', 'icc_oidc_user' => 'admin');
+    $_POST = array(
+        'nonce'           => yourls_create_nonce('icc_oidc_settings'),
+        'icc_oidc_action' => 'remove_user',
+        'icc_oidc_user'   => 'admin',
+    );
     ob_start();
     $page->render();
     $html = ob_get_clean();

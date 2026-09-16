@@ -233,6 +233,26 @@ LOGOUT=$(curl -s -o /dev/null -w '%{redirect_url}' -b "${WORK}/c2.txt" "http://1
 check 'logout redirects to the provider end session endpoint' "${LOGOUT}" 'protocol/openid-connect/logout'
 check 'logout sends id_token_hint' "${LOGOUT}" 'id_token_hint='
 
+# --- 5b. The logout link rendered in the admin page actually works -----------
+# Regression test: the link carries a nonce created for the logged in user, which
+# has to be verified against that same user (YOURLS_USER is not defined yet when
+# the plugin handles the request).
+ADMIN_HTML=$(curl -s -b "${WORK}/c3.txt" "http://127.0.0.1:${WEB_PORT}/admin/index.php")
+LOGOUT_LINK=$(printf '%s' "${ADMIN_HTML}" | grep -o 'href="[^"]*icc_oidc=logout[^"]*"' | head -1 \
+    | sed 's/^href="//; s/"$//; s/&amp;/\&/g')
+check 'admin page logout link carries a nonce' "${LOGOUT_LINK}" 'nonce='
+check 'admin page logout link targets the plugin endpoint' "${LOGOUT_LINK}" 'icc_oidc=logout'
+
+LOGOUT_LINK_RESULT=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' \
+    -b "${WORK}/c3.txt" -c "${WORK}/c3.txt" "${LOGOUT_LINK}")
+check 'clicking logout is accepted (nonce matches the session user)' "${LOGOUT_LINK_RESULT}" \
+    "302 http://127.0.0.1:${IDP_PORT}/realms/mock/protocol/openid-connect/logout"
+check 'the YOURLS cookie was deleted' \
+    "$(grep -c 'yourls_' "${WORK}/c3.txt")" '^0$'
+check 'the YOURLS session is gone after logout' \
+    "$(curl -s -o /dev/null -w '%{redirect_url}' -b "${WORK}/c3.txt" "http://127.0.0.1:${WEB_PORT}/admin/index.php")" \
+    'protocol/openid-connect/auth'
+
 # --- 6. Settings page --------------------------------------------------------
 SETTINGS=$(curl -s -b "${WORK}/c2.txt" "http://127.0.0.1:${WEB_PORT}/admin/plugins.php?page=icc_openid_client")
 check 'settings page renders' "${SETTINGS}" 'Client Settings'

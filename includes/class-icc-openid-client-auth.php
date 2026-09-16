@@ -387,8 +387,17 @@ class ICC_OpenID_Client_Auth
             return;
         }
 
-        if (!function_exists('yourls_cookie_name') || isset($_COOKIE[yourls_cookie_name()])) {
-            // Already authenticated (or YOURLS too old to expose its cookie name).
+        if (!function_exists('yourls_cookie_name')) {
+            // YOURLS too old to expose its cookie name: let it handle the request.
+            return;
+        }
+
+        $cookie_name = yourls_cookie_name();
+
+        // A non empty session cookie means the request is already authenticated
+        // (or that YOURLS will say so). An empty one is what YOURLS leaves behind
+        // on logout, so it must not stop the automatic SSO redirection.
+        if (isset($_COOKIE[$cookie_name]) && (string) $_COOKIE[$cookie_name] !== '') {
             return;
         }
 
@@ -423,11 +432,15 @@ class ICC_OpenID_Client_Auth
      */
     public function handle_logout()
     {
-        if (function_exists('yourls_verify_nonce') && isset($_GET['nonce'])) {
-            yourls_verify_nonce('icc_oidc_logout', $_GET['nonce']);
+        // Resolve the session user first: the logout link carries a nonce created
+        // for the logged in user, and YOURLS_USER is only defined after
+        // authentication, which has not run yet when this plugin is called.
+        $login = $this->current_user_from_cookie();
+
+        if ($login !== '' && function_exists('yourls_verify_nonce') && isset($_GET['nonce'])) {
+            yourls_verify_nonce('icc_oidc_logout', $_GET['nonce'], $login);
         }
 
-        $login = $this->current_user_from_cookie();
         $id_token = '';
 
         if ($login !== '') {

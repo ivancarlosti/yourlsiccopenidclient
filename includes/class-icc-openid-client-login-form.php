@@ -52,6 +52,7 @@ class ICC_OpenID_Client_Login_Form
 
         yourls_add_action('login_form_top', array($form, 'render_form_top'));
         yourls_add_action('login_form_bottom', array($form, 'render_login_button'));
+        yourls_add_action('login_form_end', array($form, 'render_button_only_script'));
 
         return $form;
     }
@@ -186,7 +187,7 @@ class ICC_OpenID_Client_Login_Form
     }
 
     /**
-     * Render the error notice (if any) and hide the password form in "button only" mode.
+     * Render the error notice (if any) and hide the login fields in "button only" mode.
      *
      * @return void
      */
@@ -207,24 +208,79 @@ class ICC_OpenID_Client_Login_Form
             echo '</p>' . "\n";
         }
 
-        if ((string) $this->setting('login_type') !== 'button_only') {
+        if ((string) $this->setting('login_type') !== 'button_only' || !$this->is_configured()) {
             return;
         }
 
-        // "Button only": hide the user name, password and submit fields (and labels).
+        // "Button only": hide the user name, password and submit fields (and labels)
+        // right away. The generic rule is a no-JS fallback for the other field
+        // blocks (2FA, captcha, ...), which the script below hides on its own.
         echo '<style type="text/css">' . "\n"
             . "#username, #password, #submit, label[for=\"username\"], label[for=\"password\"] { display: none !important; }\n"
+            . "form > p:has(input:not([type=\"hidden\"])):not(:has(a)) { display: none !important; }\n"
             . "</style>\n";
+    }
+
+    /**
+     * Hide every login field block but the SSO button in "button only" mode.
+     *
+     * YOURLS prints each field in its own block, so plugins adding fields on
+     * login_form_bottom (for example the "2FA Token" field of ICC Webmaster
+     * Settings) leave them visible when the password form is hidden. The blocks
+     * are hidden here instead of being removed: display:none fields (nonce,
+     * captcha tokens) are still submitted, and a page without the SSO button is
+     * left untouched.
+     *
+     * Emitted on login_form_end so the whole form is already parsed.
+     *
+     * @return void
+     */
+    public function render_button_only_script()
+    {
+        if ((string) $this->setting('login_type') !== 'button_only' || !$this->is_configured()) {
+            return;
+        }
+
+        /**
+         * Filter the field ids whose block stays visible in "button only" mode.
+         *
+         * @param array $keep Field ids.
+         */
+        $keep_ids = yourls_apply_filter('icc_oidc_button_only_keep_ids', array());
+
+        $keep = array();
+
+        foreach ((array) $keep_ids as $id) {
+            $id = (string) preg_replace('/[^A-Za-z0-9_-]/', '', (string) $id);
+
+            if ($id !== '') {
+                $keep[] = $id;
+            }
+        }
 
         echo '<script type="text/javascript">' . "\n"
             . "(function(){\n"
+            . "  var keepIds = " . json_encode(array_values(array_unique($keep))) . ";\n"
+            . "  function isKept(block){\n"
+            . "    for (var i = 0; i < keepIds.length; i++) {\n"
+            . "      if (block.querySelector('#' + keepIds[i])) { return true; }\n"
+            . "    }\n"
+            . "    return false;\n"
+            . "  }\n"
             . "  function iccOidcHidePasswordForm(){\n"
-            . "    var ids = ['username', 'password', 'submit'];\n"
-            . "    for (var i = 0; i < ids.length; i++) {\n"
-            . "      var el = document.getElementById(ids[i]);\n"
-            . "      if (el && el.parentNode && el.parentNode.tagName === 'P') {\n"
-            . "        el.parentNode.style.display = 'none';\n"
-            . "      }\n"
+            . "    var button = document.querySelector('.icc-oidc-login-button');\n"
+            . "    if (!button) { return; }\n"
+            . "    var form = button.parentNode;\n"
+            . "    while (form && form.tagName !== 'FORM') { form = form.parentNode; }\n"
+            . "    if (!form) { return; }\n"
+            . "    var blocks = form.children;\n"
+            . "    for (var i = 0; i < blocks.length; i++) {\n"
+            . "      var block = blocks[i];\n"
+            . "      if (block.nodeType !== 1 || block === button) { continue; }\n"
+            . "      if (block.contains && block.contains(button)) { continue; }\n"
+            . "      if (!block.querySelector('input:not([type=\"hidden\"]), select, textarea, button')) { continue; }\n"
+            . "      if (isKept(block)) { continue; }\n"
+            . "      block.style.display = 'none';\n"
             . "    }\n"
             . "  }\n"
             . "  if (document.readyState === 'loading') {\n"

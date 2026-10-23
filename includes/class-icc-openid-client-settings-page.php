@@ -88,7 +88,7 @@ class ICC_OpenID_Client_Settings_Page
                         'button'      => 'OpenID Connect button on login form',
                         'button_only' => 'OpenID Connect button only (no password form)',
                         'auto'        => 'Auto Login - SSO',
-                    ), 'hint' => 'How the login screen should offer the SSO login.'),
+                    ), 'hint' => 'How the login screen should offer the SSO login. Button only hides the password form and every other login field (e.g. the 2FA token).'),
                     'login_button_text'     => array('label' => 'Login Button Text', 'type' => 'text', 'hint' => 'Empty uses "Login with Single Sign-On".'),
                     'login_button_logo_url' => array('label' => 'Login Button Logo URL', 'type' => 'text', 'hint' => 'Optional image shown before the button text.'),
                     'client_id'             => array('label' => 'Client ID', 'type' => 'text', 'hint' => 'Client identifier registered at the identity provider.'),

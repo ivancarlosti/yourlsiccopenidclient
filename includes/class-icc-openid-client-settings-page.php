@@ -694,7 +694,7 @@ class ICC_OpenID_Client_Settings_Page
             . 'Google: <code>https://accounts.google.com</code></small></p>' . "\n";
 
         echo '<p><strong>Requirements</strong><br />'
-            . '<small>YOURLS 1.8.2+ (tested on 1.10.x), PHP 7.4+, ext-openssl. '
+            . '<small>YOURLS 1.8.2+ (tested on 1.10.x), PHP 8.2+, ext-openssl. '
             . 'No third party libraries are bundled.</small></p>' . "\n";
 
         if (!icc_oidc_is_https(icc_oidc_site_url())) {

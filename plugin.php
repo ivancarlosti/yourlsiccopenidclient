@@ -21,7 +21,52 @@ define('ICC_OIDC_PLUGIN_DIR', dirname(__FILE__));
 // Shared helpers, settings accessors and the plugin autoloader.
 require_once ICC_OIDC_PLUGIN_DIR . '/includes/functions-icc-openid-client.php';
 
+// Minimum supported PHP version (kept in sync with the plugin page and README).
+define('ICC_OIDC_MIN_PHP', '8.2');
+
+if (version_compare(PHP_VERSION, ICC_OIDC_MIN_PHP, '<')) {
+    // Register a page that explains the requirement, then stop: no callback
+    // endpoint, no SSO button and no hook runs on an unsupported PHP version.
+    yourls_add_action('plugins_loaded', 'icc_oidc_php_version_notice_register_page');
+    return;
+}
+
 yourls_add_action('plugins_loaded', 'icc_oidc_bootstrap');
+
+/**
+ * Register the OpenID Connect page when PHP is below ICC_OIDC_MIN_PHP.
+ *
+ * Uses the same slug as the settings page so the admin menu entry stays put and
+ * the administrator lands on the explanation instead of a blank screen.
+ *
+ * @return void
+ */
+function icc_oidc_php_version_notice_register_page()
+{
+    yourls_register_plugin_page(
+        'icc_openid_client',
+        'OpenID Connect',
+        'icc_oidc_php_version_notice'
+    );
+}
+
+/**
+ * Explain that Single Sign-On is disabled on an unsupported PHP version.
+ *
+ * @return void
+ */
+function icc_oidc_php_version_notice()
+{
+    echo '<p style="color:#a33;"><strong>'
+        . icc_oidc_esc_html(
+            sprintf(
+                'This plugin requires PHP %s or later. This YOURLS installation runs PHP %s, so Single Sign-On is disabled.',
+                ICC_OIDC_MIN_PHP,
+                PHP_VERSION
+            )
+        )
+        . '</strong></p>' . "\n";
+}
 
 /**
  * Register plugin features once all plugins are loaded.

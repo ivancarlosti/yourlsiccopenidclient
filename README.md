@@ -141,7 +141,7 @@ Version 3.0 removes the *Redirect URI Override* setting and uses a YOURLS served
 
 ## Requirements
 * YOURLS 1.8.2+ (tested with YOURLS 1.10.x)
-* PHP 7.4+ with `ext-openssl`
+* PHP 8.2+ with `ext-openssl`
 * HTTPS in production
 
 ## Screenshots

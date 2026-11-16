@@ -27,6 +27,11 @@ class ICC_OpenID_Client_Client
     const STATE_OPTION = 'icc_oidc_states';
 
     /**
+     * Cookie identifying the browser that started a login attempt.
+     */
+    const BROWSER_COOKIE = 'icc_oidc_browser';
+
+    /**
      * Plugin settings.
      *
      * @var array
@@ -187,22 +192,20 @@ class ICC_OpenID_Client_Client
      * Create a new login attempt: a random state plus a random nonce.
      *
      * Both values are stored server side so the callback can be tied to the
-     * browser that started the flow (CSRF + replay protection).
+     * browser that started the flow (CSRF + replay protection). The attempt is
+     * also bound to a browser cookie: a callback opened in another browser (the
+     * classic login CSRF) cannot consume it.
      *
      * @param string $redirect_to Local URL to send the user to after login.
      *
-     * @return array array('state' => string, 'nonce' => string)
+     * @return array array('state' => string, 'nonce' => string, 'code_challenge' => string)
      */
     public function new_state($redirect_to = '')
     {
         $state = bin2hex(random_bytes(16));
         $nonce = bin2hex(random_bytes(16));
         $time = time();
-        $limit = intval($this->setting('state_time_limit', 180));
-
-        if ($limit <= 0) {
-            $limit = 180;
-        }
+        $limit = $this->state_time_limit();
 
         $states = yourls_get_option(self::STATE_OPTION);
         $states = is_array($states) ? $states : array();
@@ -214,15 +217,37 @@ class ICC_OpenID_Client_Client
             }
         }
 
+        $browser_id = $this->ensure_browser_id();
+
+        if ($browser_id === '') {
+            $this->log('Login attempt stored without a browser binding: the response can be answered by any browser.', 'state-binding');
+        }
+
+        $code_verifier = '';
+        $code_challenge = '';
+
+        if ($this->pkce_enabled()) {
+            // 32 random bytes as hex: 64 chars, inside the 43..128 range of
+            // RFC 7636 and made only of unreserved characters.
+            $code_verifier = bin2hex(random_bytes(32));
+            $code_challenge = $this->code_challenge($code_verifier);
+        }
+
         $states[$state] = array(
-            'redirect_to' => (string) $redirect_to,
-            'nonce'       => $nonce,
-            'time'        => $time,
+            'redirect_to'   => (string) $redirect_to,
+            'nonce'         => $nonce,
+            'time'          => $time,
+            'browser'       => $browser_id === '' ? '' : $this->hash_browser_id($browser_id),
+            'code_verifier' => $code_verifier,
         );
 
         yourls_update_option(self::STATE_OPTION, $states);
 
-        return array('state' => $state, 'nonce' => $nonce);
+        return array(
+            'state'          => $state,
+            'nonce'          => $nonce,
+            'code_challenge' => $code_challenge,
+        );
     }
 
     /**
@@ -230,21 +255,23 @@ class ICC_OpenID_Client_Client
      *
      * @param string $state State received from the IdP.
      *
-     * @return array array('redirect_to' => string, 'nonce' => string, 'time' => int)
+     * @return array array('redirect_to' => string, 'nonce' => string, 'time' => int, 'code_verifier' => string)
      *
-     * @throws ICC_OpenID_Client_Error When the state is unknown or expired.
+     * @throws ICC_OpenID_Client_Error When the state is unknown, expired or came from another browser.
      */
     public function consume_state($state)
     {
-        $state = trim((string) $state);
-        $limit = intval($this->setting('state_time_limit', 180));
-
-        if ($limit <= 0) {
-            $limit = 180;
-        }
+        $state = is_string($state) ? trim($state) : '';
+        $limit = $this->state_time_limit();
 
         if ($state === '') {
             throw new ICC_OpenID_Client_Error('missing-authentication-state', 'The authentication response has no state.');
+        }
+
+        // States are 128 bit random lowercase hex values, so anything else is
+        // rejected before it reaches the option lookup.
+        if (!preg_match('/^[a-f0-9]{32}$/', $state)) {
+            throw new ICC_OpenID_Client_Error('state-not-found', 'Unknown authentication state, please try again.');
         }
 
         $states = yourls_get_option(self::STATE_OPTION);
@@ -256,19 +283,215 @@ class ICC_OpenID_Client_Client
 
         $entry = $states[$state];
 
-        // Always remove the state: it cannot be reused.
-        unset($states[$state]);
-        yourls_update_option(self::STATE_OPTION, $states);
-
         if (!isset($entry['time']) || intval($entry['time']) < time() - $limit) {
+            unset($states[$state]);
+            yourls_update_option(self::STATE_OPTION, $states);
+
             throw new ICC_OpenID_Client_Error('state-expired', 'The authentication attempt expired, please try again.');
         }
 
+        // A response delivered to any other browser (a prefetch, a link scanner,
+        // a login CSRF) must not cancel the attempt: the state survives until
+        // the browser that started it answers, or until it expires.
+        $this->assert_same_browser($entry);
+
+        // Single use: the state is removed before it is handed back.
+        unset($states[$state]);
+        yourls_update_option(self::STATE_OPTION, $states);
+
         return array(
-            'redirect_to' => isset($entry['redirect_to']) ? (string) $entry['redirect_to'] : '',
-            'nonce'       => isset($entry['nonce']) ? (string) $entry['nonce'] : '',
-            'time'        => isset($entry['time']) ? intval($entry['time']) : 0,
+            'redirect_to'   => isset($entry['redirect_to']) ? (string) $entry['redirect_to'] : '',
+            'nonce'         => isset($entry['nonce']) ? (string) $entry['nonce'] : '',
+            'time'          => isset($entry['time']) ? intval($entry['time']) : 0,
+            'code_verifier' => isset($entry['code_verifier']) ? (string) $entry['code_verifier'] : '',
         );
+    }
+
+    /**
+     * Make sure the callback is answered by the browser that started the login.
+     *
+     * Attempts stored before the binding existed carry no "browser" value; they
+     * are accepted, but expire within state_time_limit anyway.
+     *
+     * @param array $entry Stored login attempt.
+     *
+     * @return void
+     *
+     * @throws ICC_OpenID_Client_Error When the attempt was started in another browser.
+     */
+    protected function assert_same_browser(array $entry)
+    {
+        $expected = isset($entry['browser']) ? (string) $entry['browser'] : '';
+
+        if ($expected === '') {
+            return;
+        }
+
+        $browser_id = $this->browser_id();
+
+        if ($browser_id === '' || !hash_equals($expected, $this->hash_browser_id($browser_id))) {
+            $this->log('Authentication response rejected: it was not delivered to the browser that started the login.', 'state-binding');
+
+            throw new ICC_OpenID_Client_Error(
+                'state-other-browser',
+                'This login attempt was started in another browser, please try again.'
+            );
+        }
+    }
+
+    /**
+     * Lifetime of a login attempt, in seconds.
+     *
+     * @return int
+     */
+    protected function state_time_limit()
+    {
+        $limit = intval($this->setting('state_time_limit', 180));
+
+        return $limit > 0 ? $limit : 180;
+    }
+    /**
+     * Whether PKCE (RFC 7636) is sent with the authorization request.
+     *
+     * @return bool
+     */
+    public function pkce_enabled()
+    {
+        return (bool) $this->setting('enable_pkce', 0);
+    }
+
+    /**
+     * S256 code challenge for a code verifier.
+     *
+     * @param string $code_verifier Code verifier.
+     *
+     * @return string
+     */
+    protected function code_challenge($code_verifier)
+    {
+        $hash = hash('sha256', (string) $code_verifier, true);
+
+        return rtrim(strtr(base64_encode($hash), '+/', '-_'), '=');
+    }
+
+    /**
+     * Value of the browser cookie, or an empty string when it is missing.
+     *
+     * @return string
+     */
+    public function browser_id()
+    {
+        $name = $this->browser_cookie_name();
+
+        if (!isset($_COOKIE[$name]) || !is_string($_COOKIE[$name])) {
+            return '';
+        }
+
+        $value = trim($_COOKIE[$name]);
+
+        return preg_match('/^[a-f0-9]{32}$/', $value) ? $value : '';
+    }
+
+    /**
+     * Return the browser id, setting the cookie the first time.
+     *
+     * @return string Empty string when the cookie cannot be set (headers already sent).
+     */
+    protected function ensure_browser_id()
+    {
+        $browser_id = $this->browser_id();
+
+        if ($browser_id !== '') {
+            return $browser_id;
+        }
+
+        if (headers_sent()) {
+            $this->log('Cannot set the browser cookie: the response headers were already sent.', 'state-binding');
+
+            return '';
+        }
+
+        $browser_id = bin2hex(random_bytes(16));
+
+        $this->send_browser_cookie($browser_id);
+
+        // Make the value available to the rest of this request.
+        $_COOKIE[$this->browser_cookie_name()] = $browser_id;
+
+        return $browser_id;
+    }
+
+    /**
+     * Send the browser cookie.
+     *
+     * @param string $browser_id Browser id.
+     *
+     * @return void
+     */
+    protected function send_browser_cookie($browser_id)
+    {
+        setcookie($this->browser_cookie_name(), $browser_id, array(
+            'expires'  => 0,
+            'path'     => '/',
+            'secure'   => $this->is_secure_context(),
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ));
+    }
+
+    /**
+     * Name of the browser cookie.
+     *
+     * Uses the __Host- prefix on HTTPS: the browser then only accepts the
+     * cookie from the very host that set it, over a secure channel, at "/".
+     *
+     * @return string
+     */
+    public function browser_cookie_name()
+    {
+        if ($this->is_secure_context()) {
+            return '__Host-' . self::BROWSER_COOKIE;
+        }
+
+        return self::BROWSER_COOKIE;
+    }
+
+    /**
+     * Hash of the browser id, as stored with the login attempt.
+     *
+     * The cookie value itself is never written to the database.
+     *
+     * @param string $browser_id Browser id.
+     *
+     * @return string
+     */
+    protected function hash_browser_id($browser_id)
+    {
+        $key = defined('YOURLS_COOKIEKEY') ? (string) YOURLS_COOKIEKEY : '';
+
+        if ($key === '') {
+            return hash('sha256', (string) $browser_id);
+        }
+
+        return hash_hmac('sha256', (string) $browser_id, $key);
+    }
+
+    /**
+     * Whether the current request runs over HTTPS.
+     *
+     * @return bool
+     */
+    protected function is_secure_context()
+    {
+        if (function_exists('yourls_is_ssl')) {
+            return (bool) yourls_is_ssl();
+        }
+
+        if (function_exists('icc_oidc_is_https') && function_exists('icc_oidc_site_url')) {
+            return icc_oidc_is_https(icc_oidc_site_url());
+        }
+
+        return !empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off';
     }
 
     /**
@@ -325,6 +548,11 @@ class ICC_OpenID_Client_Client
             'redirect_uri'  => $this->get_redirect_uri(),
         );
 
+        if ($attempt['code_challenge'] !== '') {
+            $params['code_challenge'] = $attempt['code_challenge'];
+            $params['code_challenge_method'] = 'S256';
+        }
+
         $acr_values = trim((string) $this->setting('acr_values'));
 
         if ($acr_values !== '') {
@@ -370,13 +598,14 @@ class ICC_OpenID_Client_Client
     /**
      * Exchange an authorization code for tokens.
      *
-     * @param string $code Authorization code.
+     * @param string $code          Authorization code.
+     * @param string $code_verifier PKCE code verifier stored with the login attempt.
      *
      * @return array Token response.
      *
      * @throws ICC_OpenID_Client_Error When the endpoint is not configured or the exchange fails.
      */
-    public function request_token($code)
+    public function request_token($code, $code_verifier = '')
     {
         $endpoint = trim((string) $this->setting('endpoint_token'));
 
@@ -391,6 +620,10 @@ class ICC_OpenID_Client_Client
             'client_secret' => (string) $this->setting('client_secret'),
             'redirect_uri'  => $this->get_redirect_uri(),
         );
+
+        if ((string) $code_verifier !== '') {
+            $params['code_verifier'] = (string) $code_verifier;
+        }
 
         $scope = trim((string) $this->setting('scope'));
 

@@ -25,20 +25,11 @@ class ICC_OpenID_Client_Login_Form
     protected $settings;
 
     /**
-     * Protocol client.
-     *
-     * @var ICC_OpenID_Client_Client|null
+     * @param array|null $settings Plugin settings.
      */
-    protected $client;
-
-    /**
-     * @param array|null  $settings Plugin settings.
-     * @param object|null $client   Optional protocol client.
-     */
-    public function __construct($settings = null, $client = null)
+    public function __construct($settings = null)
     {
         $this->settings = is_array($settings) ? $settings : icc_oidc_get_all();
-        $this->client = $client;
     }
 
     /**
@@ -79,20 +70,6 @@ class ICC_OpenID_Client_Login_Form
     {
         return trim((string) $this->setting('endpoint_login')) !== ''
             && trim((string) $this->setting('client_id')) !== '';
-    }
-
-    /**
-     * Build (or reuse) the protocol client.
-     *
-     * @return ICC_OpenID_Client_Client
-     */
-    protected function client()
-    {
-        if ($this->client === null) {
-            $this->client = new ICC_OpenID_Client_Client($this->settings, new ICC_OpenID_Client_Logger());
-        }
-
-        return $this->client;
     }
 
     /**
@@ -293,21 +270,31 @@ class ICC_OpenID_Client_Login_Form
     }
 
     /**
-     * Authentication URL for the current login attempt.
+     * URL that starts the login.
+     *
+     * The visitor first lands on the plugin endpoint, which can set the cookie
+     * that binds the login attempt to this browser, and is then sent to the
+     * identity provider.
      *
      * @return string
-     *
-     * @throws ICC_OpenID_Client_Error When the login endpoint is not configured.
      */
     protected function authentication_url()
     {
-        $redirect_to = '';
+        $url = icc_oidc_endpoint_url('login');
 
         if ($this->setting('redirect_user_back')) {
             $redirect_to = $this->current_url();
+
+            if ($redirect_to !== '') {
+                $with_redirect = icc_oidc_add_query_args($url, array('redirect_to' => $redirect_to));
+
+                if ($with_redirect !== '') {
+                    $url = $with_redirect;
+                }
+            }
         }
 
-        return $this->client()->get_authentication_url($redirect_to);
+        return $url;
     }
 
     /**
@@ -342,11 +329,7 @@ class ICC_OpenID_Client_Login_Form
             return '';
         }
 
-        try {
-            $url = $this->authentication_url();
-        } catch (ICC_OpenID_Client_Error $error) {
-            return '';
-        }
+        $url = $this->authentication_url();
 
         $text = trim((string) $this->setting('login_button_text'));
 

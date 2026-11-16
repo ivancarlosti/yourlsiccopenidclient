@@ -145,6 +145,12 @@ class ICC_OpenID_Client_Auth
             return true;
         }
 
+        if ($action === 'login') {
+            $this->handle_login_start();
+
+            return true;
+        }
+
         if ($action === 'logout') {
             $this->handle_logout();
 
@@ -180,6 +186,7 @@ class ICC_OpenID_Client_Auth
             'login-endpoint-missing'       => 'Single Sign-On is not configured yet. Please contact the administrator.',
             'state-not-found'              => 'This login attempt is no longer valid. Please try again.',
             'state-expired'                => 'This login attempt expired. Please try again.',
+            'state-other-browser'          => 'This login attempt was started in another browser. Please try again.',
             'missing-authentication-state' => 'The identity provider response was incomplete. Please try again.',
             'missing-authentication-code'  => 'The identity provider response was incomplete. Please try again.',
             'invalid-signature'            => 'The identity provider token could not be verified.',
@@ -340,7 +347,7 @@ class ICC_OpenID_Client_Auth
             $state = isset($_GET['state']) ? (string) $_GET['state'] : '';
             $attempt = $client->consume_state($state);
 
-            $token_response = $client->request_token($code);
+            $token_response = $client->request_token($code, $attempt['code_verifier']);
             $id_token_claim = $client->get_id_token_claim(
                 $token_response,
                 $attempt['nonce'] !== '' ? $attempt['nonce'] : null
@@ -367,6 +374,51 @@ class ICC_OpenID_Client_Auth
 
             $this->redirect_with_error($error->error_code());
         }
+    }
+
+    /**
+     * Start a login from a URL that is able to set cookies.
+     *
+     * The login button points here instead of straight at the identity provider,
+     * so the login attempt can be bound to this browser before the visitor
+     * leaves the site. The old direct link had to create the state on the login
+     * page, which cannot set a cookie once the page is rendered.
+     *
+     * @return void
+     */
+    public function handle_login_start()
+    {
+        if (!$this->is_configured()) {
+            $this->logger->log('Login start requested but the plugin is not configured.', 'login-error');
+
+            $this->redirect_with_error('not-configured');
+        }
+
+        $redirect_to = '';
+
+        if (isset($_GET['redirect_to']) && is_string($_GET['redirect_to'])) {
+            $candidate = trim($_GET['redirect_to']);
+
+            if ($candidate !== '' && $this->is_local_url($candidate)) {
+                $redirect_to = $candidate;
+            }
+        }
+
+        try {
+            $url = $this->client()->get_authentication_url($redirect_to);
+        } catch (ICC_OpenID_Client_Error $error) {
+            $this->logger->log('Login start failed: ' . $error->error_code(), 'login-error');
+
+            yourls_do_action('icc_oidc_login_error', $error);
+
+            $this->redirect_with_error($error->error_code());
+        }
+
+        $this->logger->log('Redirecting to the identity provider', 'login');
+
+        yourls_redirect($url, 302);
+
+        die();
     }
 
     /**

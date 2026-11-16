@@ -176,6 +176,8 @@ jobs:
             --exclude='.vscode' \
             --exclude='.idea' \
             --exclude='docker' \
+            --exclude='docs' \
+            --exclude='tests' \
             --exclude='Dockerfile' \
             --exclude='CNAME' \
             --exclude='README.md' \
@@ -209,7 +211,7 @@ jobs:
           fi
 
           # No development path may leak into the package.
-          for forbidden in .github docker README.md LICENSE .git; do
+          for forbidden in .github docker docs tests README.md LICENSE .git; do
             if unzip -l "${GITHUB_WORKSPACE}/${ZIP_NAME}" | grep -q "${SLUG}/${forbidden}"; then
               echo "::error::Development path '${forbidden}' leaked into ${ZIP_NAME}."
               exit 1

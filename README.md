@@ -16,6 +16,7 @@ Login to YOURLS with Single Sign-On using any OpenID Connect identity provider (
 
 ## Features
 * OpenID Connect Authorization Code Flow against any compliant provider
+* **Hardened login flow**: the `state` is single use, time limited and bound to the browser that started the login (a cookie the plugin sets before leaving the site), so a response delivered to another browser is refused; optional **PKCE (S256)**
 * **ID token signature verification** with the provider JWKS (RS256, RS384, RS512, ES256, ES384, ES512) plus `iss`, `aud`, `azp`, `exp`, `iat`, `nbf`, `nonce` and `acr` validation
 * Login **button on the YOURLS login screen**, "button only" mode (no password form and no other login field, e.g. 2FA) or **automatic SSO** redirection
 * **Single logout**: the YOURLS logout link also ends the identity provider session (`id_token_hint`, `post_logout_redirect_uri`)
@@ -68,6 +69,7 @@ The same procedure applies to Entra ID, Google, Auth0, Okta and other providers:
 | Issuer | Expected `iss` claim; derived from the login endpoint when empty |
 | JWKS Cache TTL | How long signing keys are cached (default 3600 seconds) |
 | ACR Values | Optional authentication context requested from the provider |
+| Use PKCE (S256) | Sends a PKCE code challenge with every login (Recommended; leave it off only if the provider rejects `code_challenge`) |
 | HTTP Request Timeout | Timeout for provider requests (default 5 seconds) |
 | Disable SSL Verify | Development only: ignored unless `YOURLS_DEBUG` is on |
 | Allow Internal IdP | Allows HTTP and private network endpoints (local development) |
@@ -105,12 +107,13 @@ define( 'OIDC_ENDPOINT_USERINFO_URL', 'https://sso.example.com/realms/myrealm/pr
 define( 'OIDC_ENDPOINT_JWKS_URL', 'https://sso.example.com/realms/myrealm/protocol/openid-connect/certs' );
 define( 'OIDC_ISSUER', 'https://sso.example.com/realms/myrealm' );
 define( 'OIDC_LOGIN_TYPE', 'auto' );
+define( 'OIDC_ENABLE_PKCE', 1 );
 define( 'OIDC_EMAIL_DOMAIN_RESTRICTION', 'example.com partner.org' );
 define( 'OIDC_REDIRECT_URI', 'https://sho.rt/yourls-loader.php?icc_oidc=callback' ); // only when the default callback URL cannot be used
 ```
 
 ## How it works
-1. The user is sent to the provider authorization endpoint with a random `state` and `nonce` (stored server side, single use, time limited).
+1. The user is sent to the provider authorization endpoint with a random `state` and `nonce` (stored server side, single use, time limited, and bound to the browser that started the login) plus, when *Use PKCE* is enabled, a `code_challenge` and its verifier.
 2. The provider returns an authorization code to `https://your-yourls/admin/index.php?icc_oidc=callback` (or to `OIDC_REDIRECT_URI` when it is defined), which the plugin handles *before* YOURLS runs its own authentication.
 3. The code is exchanged for tokens; the **ID token signature is verified against the provider JWKS** (cached, refreshed on key rotation) and its claims are validated (`iss`, `aud`, `azp`, `exp`, `iat`, `nbf`, `nonce`, `acr`).
 4. `userinfo` is requested when configured, and its subject must match the ID token.
@@ -138,6 +141,15 @@ Version 3.0 removes the *Redirect URI Override* setting and uses a YOURLS served
 3. Click **Test callback URL** to confirm YOURLS answers the new URL, then log in once.
 4. Any redirect URI value left behind by version 2.x is ignored; the plugin page reports it and the button **Remove the leftover redirect URI** deletes it.
 5. If your YOURLS admin area is protected by extra authentication, define `OIDC_REDIRECT_URI` (see above) and register that URL instead.
+
+## Testing
+The security sensitive part of the login flow (browser bound single use state and PKCE) is covered by an offline regression script, run on every push and pull request by `.github/workflows/tests.yml`:
+
+```bash
+php tests/security-login-flow.php
+```
+
+See [docs/testing.md](docs/testing.md) for what is covered, and for the manual checks that need a browser and a real provider.
 
 ## Requirements
 * YOURLS 1.8.2+ (tested with YOURLS 1.10.x)

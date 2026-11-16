@@ -102,6 +102,7 @@ class ICC_OpenID_Client_Settings_Page
                     'issuer'                => array('label' => 'Issuer', 'type' => 'text', 'hint' => 'Optional: derived from the login endpoint when empty.'),
                     'jwks_cache_ttl'        => array('label' => 'JWKS Cache TTL (seconds)', 'type' => 'number', 'hint' => 'Default: 3600.'),
                     'acr_values'            => array('label' => 'ACR Values', 'type' => 'text', 'hint' => 'Optional authentication context.'),
+                    'enable_pkce'           => array('label' => 'Use PKCE (S256)', 'type' => 'checkbox', 'hint' => 'Send a PKCE code challenge with every login. Recommended: Keycloak, Entra ID, Google and Auth0 all support it. Turn it off only if your identity provider rejects the code_challenge parameter.'),
                     'http_request_timeout'  => array('label' => 'HTTP Request Timeout (seconds)', 'type' => 'number', 'hint' => 'Default: 5.'),
                     'no_sslverify'          => array('label' => 'Disable SSL Verify', 'type' => 'checkbox', 'hint' => 'Development only: ignored unless YOURLS_DEBUG is on.'),
                     'allow_internal_idp'    => array('label' => 'Allow Internal IdP', 'type' => 'checkbox', 'hint' => 'Allow HTTP and private network endpoints (local development).'),

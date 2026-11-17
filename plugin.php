@@ -3,7 +3,7 @@
 Plugin Name: ICC OpenID Connect Client
 Plugin URI: https://github.com/ivancarlosti/yourlsiccopenidclient
 Description: Login to YOURLS with Single Sign-On using any OpenID Connect identity provider (Keycloak, Entra ID, Google, Auth0, ...) and Authorization Code Flow. Features SSO auto login, login button on the login form, email domain restriction, single logout and a debug log.
-Version:           4.0.1
+Version:           4.0.2
 Requires PHP:      8.2
 Author: Ivan Carlos
 Author URI: https://ivancarlos.com.br/
@@ -14,7 +14,7 @@ if (!defined('YOURLS_ABSPATH'))
     die();
 
 // Plugin version (kept in sync with the header above by the release workflow).
-define('ICC_OIDC_VERSION', '4.0.1');
+define('ICC_OIDC_VERSION', '4.0.2');
 
 // Plugin directory.
 define('ICC_OIDC_PLUGIN_DIR', dirname(__FILE__));

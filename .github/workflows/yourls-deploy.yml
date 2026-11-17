@@ -148,6 +148,30 @@ jobs:
           echo "✅ Version ${VERSION} stamped successfully."
 
       # -------------------------------------------------------
+      # 3b. Never package a tree that fails lint, the security
+      #     regression script or the layout guard. The stamp
+      #     above already rewrote plugin.php and manifest.json,
+      #     so the guard validates the exact tree going into the
+      #     ZIP.
+      # -------------------------------------------------------
+      - name: 🐘 Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+
+      - name: 🧪 Lint, test and validate the stamped tree
+        run: |
+          status=0
+          while IFS= read -r -d '' file; do
+            php -l "${file}" || status=1
+          done < <(find . -name '*.php' -not -path './.git/*' -print0)
+          [ "${status}" -eq 0 ] || exit 1
+
+          php tests/validate-plugin-layout.php
+          php tests/security-login-flow.php
+
+      # -------------------------------------------------------
       # 4. Create the YOURLS plugin zip.
       #     YOURLS loads user/plugins/<folder>/plugin.php, so the
       #     archive root folder is the hyphenated plugin name and
@@ -177,6 +201,7 @@ jobs:
             --exclude='.idea' \
             --exclude='docker' \
             --exclude='docs' \
+            --exclude='plans' \
             --exclude='tests' \
             --exclude='Dockerfile' \
             --exclude='CNAME' \
@@ -211,7 +236,7 @@ jobs:
           fi
 
           # No development path may leak into the package.
-          for forbidden in .github docker docs tests README.md LICENSE .git; do
+          for forbidden in .github docker docs plans tests README.md LICENSE .git; do
             if unzip -l "${GITHUB_WORKSPACE}/${ZIP_NAME}" | grep -q "${SLUG}/${forbidden}"; then
               echo "::error::Development path '${forbidden}' leaked into ${ZIP_NAME}."
               exit 1

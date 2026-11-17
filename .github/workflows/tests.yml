@@ -39,5 +39,8 @@ jobs:
           done < <(find . -name '*.php' -not -path './.git/*' -print0)
           exit "${status}"
 
+      - name: 🧩 Validate plugin layout
+        run: php tests/validate-plugin-layout.php
+
       - name: 🧪 Security regression tests
         run: php tests/security-login-flow.php

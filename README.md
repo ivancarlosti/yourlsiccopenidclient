@@ -143,9 +143,10 @@ Version 3.0 removes the *Redirect URI Override* setting and uses a YOURLS served
 5. If your YOURLS admin area is protected by extra authentication, define `OIDC_REDIRECT_URI` (see above) and register that URL instead.
 
 ## Testing
-The security sensitive part of the login flow (browser bound single use state and PKCE) is covered by an offline regression script, run on every push and pull request by `.github/workflows/tests.yml`:
+The security sensitive part of the login flow (browser bound single use state and PKCE) is covered by an offline regression script, and the layout of the tree YOURLS loads (single `Plugin Name:` header in `plugin.php`, release version in sync between the header, `ICC_OIDC_VERSION`, `manifest.json` and `composer.json`) by a layout guard. Both run on every push and pull request by `.github/workflows/tests.yml`, and before the release ZIP is built:
 
 ```bash
+php tests/validate-plugin-layout.php
 php tests/security-login-flow.php
 ```
 
@@ -153,7 +154,7 @@ See [docs/testing.md](docs/testing.md) for what is covered, and for the manual c
 
 ## Requirements
 * YOURLS 1.8.2+ (tested with YOURLS 1.10.x)
-* PHP 8.2+ with `ext-openssl`
+* PHP 8.2+ with `ext-openssl` (declared in the plugin header and `composer.json`)
 * HTTPS in production
 
 ## Screenshots

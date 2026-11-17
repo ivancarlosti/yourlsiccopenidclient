@@ -1,0 +1,22 @@
+# Dependencies (never needed at runtime: the plugin has none)
+node_modules/
+vendor/
+
+# Logs, dumps and build artifacts
+*.log
+*.zip
+*.tar.gz
+
+# Local environment and secrets
+.env
+.env.local
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Tooling caches and local linter configuration
+phpcs.xml
+.phpunit.result.cache

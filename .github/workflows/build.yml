@@ -128,6 +128,28 @@ jobs:
             echo "TAGS_EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: 🐘 Set up PHP
+        if: steps.rebuild.outputs.proceed == 'true' && github.event_name != 'schedule'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+
+      # Packaging must never ship a tree that fails the checks every push
+      # already runs: a release event or a manual dispatch can target an older
+      # tag that predates them.
+      - name: 🧪 Lint, test and validate before packaging
+        if: steps.rebuild.outputs.proceed == 'true' && github.event_name != 'schedule'
+        run: |
+          status=0
+          while IFS= read -r -d '' file; do
+            php -l "${file}" || status=1
+          done < <(find . -name '*.php' -not -path './.git/*' -print0)
+          [ "${status}" -eq 0 ] || exit 1
+
+          php tests/validate-plugin-layout.php
+          php tests/security-login-flow.php
+
       - name: 📦 Create ZIP package
         if: steps.rebuild.outputs.proceed == 'true' && github.event_name != 'schedule'
         run: |

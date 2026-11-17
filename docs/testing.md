@@ -1,10 +1,43 @@
 # Testing
 
-The plugin has no Composer or PHPUnit dependency: everything it needs at runtime
-is YOURLS itself. The security sensitive part of the login flow is covered by a
-single self contained script that runs offline.
+## Static checks
+
+Every PHP file must lint cleanly:
+
+```bash
+find . -name '*.php' -not -path './.git/*' -exec php -l {} \;
+```
+
+The tree must also keep the layout YOURLS actually loads. YOURLS only reads
+`user/plugins/<folder>/plugin.php` (`yourls_get_plugins()` keeps one entry per folder and only for
+`plugin.php`, and `yourls_is_a_plugin_file()` rejects every other file name), so a package with a
+second `Plugin Name:` header, or with the main file under another name, silently stops appearing in
+`/admin/plugins.php`. `tests/validate-plugin-layout.php` guards that, together with the release
+metadata:
+
+```bash
+php tests/validate-plugin-layout.php                                    # repository tree
+php tests/validate-plugin-layout.php /path/to/icc-openid-connect-client # extracted package
+```
+
+It fails when:
+
+| Check | Why it matters |
+| --- | --- |
+| `plugin.php` is missing, or has no `Plugin Name:` / `Version:` header | YOURLS would not list or load the plugin |
+| another PHP file declares a `Plugin Name:` header | it is a file YOURLS never loads (a template or a file copied from the WordPress plugin) and it hides the real plugin in tooling that scans headers |
+| the `Version:` header, `ICC_OIDC_VERSION` and `manifest.json` disagree | a release bumped in only some files reports the wrong version in `/admin/plugins.php` and in the ZIP name |
+| `Requires PHP:`, `ICC_OIDC_MIN_PHP` and `composer.json` disagree | the runtime check in `plugin.php` would disable the plugin on a PHP version the metadata allows (or the opposite) |
+
+`.github/workflows/tests.yml` runs it on PHP 8.2, 8.3 and 8.4 for every push and pull request, and
+`build.yml` / `yourls-deploy.yml` run it (after `php -l` and the security script) before creating the
+release ZIP, so a tag packaged months later either passes today's checks or fails the job.
 
 ## Automated tests
+
+The plugin has no Composer or PHPUnit dependency: everything it needs at runtime is YOURLS itself.
+The security sensitive part of the login flow is covered by a single self contained script that runs
+offline.
 
 ```bash
 php tests/security-login-flow.php
@@ -30,6 +63,26 @@ the process.
 | PKCE | no `code_challenge` is sent by default; when *Use PKCE* is enabled the challenge is the S256 hash of the stored verifier, the verifier has a valid RFC 7636 length and alphabet, and it is sent to the token endpoint |
 | Cookie hardening | no prefix over plain HTTP, `__Host-` prefix over HTTPS, a tampered cookie is refused, a login started over HTTPS cannot be completed over HTTP |
 | Legacy attempts | attempts stored before the browser binding existed (no `browser` value) are still accepted |
+
+## Release package
+
+`.github/workflows/yourls-deploy.yml` builds `icc-openid-connect-client.zip` from the release tag,
+stamps the version and fails the job when the stamped tree does not pass `php -l`, the layout guard
+or the security script. To inspect an asset by hand:
+
+```bash
+# The archive root must be the plugin folder and the main file must be plugin.php.
+unzip -l icc-openid-connect-client.zip | head
+
+# The packaged header must carry the release version, like manifest.json.
+unzip -p icc-openid-connect-client.zip icc-openid-connect-client/plugin.php | grep -E '^(Version|Requires PHP):'
+unzip -p icc-openid-connect-client.zip icc-openid-connect-client/manifest.json
+```
+
+No `.github/`, `docker/`, `docs/`, `plans/`, `tests/`, `README.md` or `LICENSE` entry may be inside the archive
+(the workflow checks that too), and extracting it into `user/plugins` must leave
+`user/plugins/icc-openid-connect-client/plugin.php`, so `/admin/plugins.php` lists
+*ICC OpenID Connect Client* and activation succeeds.
 
 ## Manual verification
 

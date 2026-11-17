@@ -1,0 +1,20 @@
+{
+    "name": "ivancarlosti/yourlsiccopenidclient",
+    "description": "Login to YOURLS with Single Sign-On using any OpenID Connect identity provider (Keycloak, Entra ID, Google, Auth0, ...) through the Authorization Code Flow.",
+    "type": "yourls-plugin",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Ivan Carlos",
+            "email": "ivan@ivancarlos.com.br",
+            "homepage": "https://ivancarlos.com.br"
+        }
+    ],
+    "require": {
+        "php": ">=8.2"
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true
+    }
+}
